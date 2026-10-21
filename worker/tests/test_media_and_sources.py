@@ -128,3 +128,30 @@ def test_cli_import_export_applies_period(monkeypatch, cfg, tmp_path):
 
     args.since, args.until = date(2026, 8, 1), None
     assert cli.cmd_import_export(cfg, args) == 1          # nothing in period
+
+
+def test_long_running_job_is_not_a_stalled_loop(cfg):
+    from datetime import datetime, timedelta
+
+    from gruppix.service import Job, Service
+
+    svc = Service(cfg)
+    now = datetime.now(cfg.tz)
+    svc.heartbeat = now - timedelta(minutes=40)            # loop busy with one job
+    svc.running = ("import-drop", now - timedelta(minutes=40))
+    code, body = svc.health()
+    assert code == 200 and body["running"]["job"] == "import-drop"
+
+    svc.running = ("import-drop", now - timedelta(hours=4))   # really hung
+    code, body = svc.health()
+    assert code == 503 and body["problems"] == ["job import-drop running for 240 min"]
+
+    svc.running = None                                     # idle loop that stopped ticking
+    assert svc.health()[1]["problems"] == ["scheduler loop stalled"]
+
+    # _execute keeps the heartbeat fresh after every job, also a slow one
+    seen = {}
+    job = Job("slow", lambda: seen.setdefault("running", svc.running) and None, now)
+    svc._execute(job)
+    assert seen["running"][0] == "slow" and svc.running is None
+    assert datetime.now(cfg.tz) - svc.heartbeat < timedelta(seconds=5)

@@ -29,7 +29,8 @@ log = logging.getLogger(__name__)
 
 _TICK_SECONDS = 30
 _MAX_FAILURES = 3            # consecutive failures before a job raises an alert
-_STALL_AFTER = timedelta(minutes=5)
+_STALL_AFTER = timedelta(minutes=5)   # loop idle this long without a running job = hung
+_JOB_MAX = timedelta(hours=3)        # a single job running longer = hung (large imports take minutes)
 _MAX_WEBHOOK_BYTES = 10 * 1024 * 1024  # payloads carry a media URL, never the file
 
 _JOB_TITLES = {
@@ -83,6 +84,7 @@ class Service:
     stop: threading.Event = field(default_factory=threading.Event)
     jobs: list[Job] = field(default_factory=list)
     heartbeat: datetime | None = None
+    running: tuple[str, datetime] | None = None  # job in progress and its start
     inbox: WebhookInbox = None  # type: ignore[assignment]
     live: LiveIntake | None = None
     waha_misses: int = 0
@@ -257,6 +259,16 @@ class Service:
         return 0
 
     def _execute(self, job: Job) -> None:
+        # Jobs run in the scheduler loop; long ones (a big photographer upload,
+        # backfill) must not look like a hung loop to the health check.
+        self.running = (job.name, datetime.now(self.cfg.tz))
+        try:
+            self._run_job(job)
+        finally:
+            self.running = None
+            self.heartbeat = datetime.now(self.cfg.tz)
+
+    def _run_job(self, job: Job) -> None:
         started = time.monotonic()
         try:
             summary = job.run()
@@ -299,12 +311,18 @@ class Service:
         active = self.notifier.active
         problems = [msg for key, msg in active.items() if key.startswith("job:")]
         warnings = [msg for key, msg in active.items() if not key.startswith("job:")]
-        if self.heartbeat is None or now - self.heartbeat > _STALL_AFTER:
+        running = self.running
+        if running is not None:
+            name, since = running
+            if now - since > _JOB_MAX:
+                problems.append(f"job {name} running for {int((now - since).total_seconds() // 60)} min")
+        elif self.heartbeat is None or now - self.heartbeat > _STALL_AFTER:
             problems.append("scheduler loop stalled")
         body = {
             "status": "error" if problems else ("warning" if warnings else "ok"),
             "problems": problems,
             "warnings": warnings,
+            "running": None if running is None else {"job": running[0], "since": running[1].isoformat(timespec="seconds")},
             "jobs": {j.name: j.status() for j in self.jobs},
             "webhooks": self.inbox.stats(),
             "live": self.live.stats() if self.live else None,

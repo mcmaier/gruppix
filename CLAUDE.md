@@ -16,7 +16,7 @@ Kontext für Claude Code. gruppix übernimmt Fotos aus der WhatsApp-Gruppe eines
 | Modul | Aufgabe |
 | --- | --- |
 | `cli.py` | Einstieg `python -m gruppix <befehl>`; Befehle rufen `jobs.py` |
-| `service.py` | Dauerdienst `serve`: Zeitplan (Jobs), Prüfungen, Alarme, `/health`, `/webhook`, startet `LiveIntake` |
+| `service.py` | Dauerdienst `serve`: Zeitplan (Jobs, laufen nacheinander in der Hauptschleife), Prüfungen, Alarme, `/health` (laufender Auftrag ≤ 3 h gilt nicht als Hänger), `/webhook`, startet `LiveIntake` |
 | `jobs.py` | Arbeitseinheiten für CLI und Dienst; `pipeline_lock` (fcntl) serialisiert alles, was Zustände ändert |
 | `pipeline.py` | Kernlogik: ingest → Zuordnung → Zurückhalten/Quarantäne → Verarbeitung → Archiv → Upload |
 | `events.py` | iCal laden, Wiederholungen, Titelbereinigung, Ausschluss, De-Duplizierung, Zeitfenster |

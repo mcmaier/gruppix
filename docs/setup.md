@@ -368,6 +368,8 @@ sudo diff <(sudo grep -o '^[A-Z0-9_]*=' .env | sort) <(grep -o '^[A-Z0-9_]*=' .e
 | `WAHA nicht erreichbar (ReadTimeout)` | Host ausgelastet | wird erst nach 3 Fehlversuchen gemeldet, meist harmlos |
 | `WAHA antwortet mit HTTP 401` | API-Schlüssel ungleich | `sudo docker compose up -d --force-recreate waha` |
 | `webhooks.signatures` zeigt `invalid` | `HOOK_HMAC_KEY` geändert, aber nur ein Container neu erstellt | beide neu erstellen: `up -d --force-recreate` |
+| `scheduler loop stalled` | Dienst hängt wirklich (seit dieser Version: kein Auftrag läuft, und die Schleife tickt seit 5 min nicht) | Log ansehen, `sudo docker compose restart worker` |
+| `job … running for … min` | Ein Auftrag läuft länger als 3 Stunden | Log ansehen; hängt er, Worker neu starten |
 | `another job holds the pipeline lock` | Import oder Dienst arbeitet gerade | warten, wird automatisch wiederholt |
 | Dashboard nicht erreichbar | `WAHA_BIND=127.0.0.1` | SSH-Tunnel (Abschnitt 2B) oder im LAN `0.0.0.0` |
 | Alles in der Quarantäne | Kalender leer oder Ausschluss zu breit | `gx calendar …` prüfen |
