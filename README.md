@@ -1,3 +1,5 @@
+![gruppix: Fotos aus der Vereinsgruppe, automatisch sortiert. Gruppe → Termin → Galerie](docs/gruppix-banner-1280x640.png)
+
 # gruppix
 
 **Gruppe + Pics:** Fotos aus der WhatsApp-Gruppe des Vereins landen automatisch, nach Terminen sortiert, in einer Nextcloud-Galerie für Mitglieder. Die Originale werden auf dem Docker-Host (NAS oder Server) archiviert.
