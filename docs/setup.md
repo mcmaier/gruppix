@@ -56,7 +56,7 @@ Bilder für die Öffentlichkeit nach `Fotos/Öffentlich/<Termin>` **kopieren**, 
 ### 2A. Synology
 
 1. **Archiv:** einen freigegebenen Ordner anlegen, z. B. `Verein`, darin `Fotoarchiv`. Rechte nur für Admins. Pfad merken, etwa `/volume1/Verein/Fotoarchiv`.
-2. **Projektordner** `/volume1/docker/gruppix` mit dem Inhalt dieses Repos füllen. Am einfachsten per `git clone <Repo-URL> /volume1/docker/gruppix` (Paket *Git Server* liefert `git`). Alternativ die Dateien über die Freigabe `docker` kopieren, ohne `.git`, `.env`, `data/` und `import/`.
+2. **Projektordner** `/volume1/docker/gruppix` mit dem Inhalt dieses Repos füllen. Am einfachsten per `git clone https://github.com/mcmaier/gruppix /volume1/docker/gruppix` (Paket *Git Server* liefert `git`). Alternativ die Dateien über die Freigabe `docker` kopieren, ohne `.git`, `.env`, `data/` und `import/`.
 3. Per SSH weiter mit **Abschnitt 3**. Auf der Synology brauchen alle `docker`-Befehle `sudo`.
 
 Im Container Manager braucht es kein eigenes Projekt, die Container erscheinen auch so in der Liste. Wer das Projekt in der Oberfläche sehen will: *Projekt → Erstellen*, Name **exakt** `gruppix`, Pfad `/volume1/docker/gruppix`, *Vorhandene docker-compose.yml verwenden*.
@@ -76,7 +76,7 @@ Einrichtung:
 # Docker Engine + Compose plugin, e.g. per docs.docker.com; on Ubuntu 24.04 also:
 sudo apt install docker.io docker-compose-v2 git
 sudo usermod -aG docker $USER                             # danach neu anmelden, dann ohne sudo
-git clone <Repo-URL> /srv/gruppix
+git clone https://github.com/mcmaier/gruppix /srv/gruppix
 mkdir -p /srv/gruppix-archive                             # ARCHIVE_PATH
 ```
 
@@ -184,6 +184,8 @@ sudo docker compose exec -T worker python -c \
 Kontrolle mit `gx calendar --from 2026-01-01 --to 2026-12-31`.
 
 ## 6. Bestand importieren (WhatsApp-Export)
+
+> **Einfacher über das Admin-Portal** (Abschnitt 8): Seite *Import*, ZIP auswählen, „Ab Datum“ prüfen, hochladen. Der Import läuft im Hintergrund mit Fortschritt; die ZIP-Datei wird danach gelöscht. Der folgende Weg per SSH bleibt für den ersten großen Import mit Trockenlauf.
 
 1. **Export:** In der Gruppe *Chat exportieren → Medien einbeziehen*, die ZIP-Datei nach `import/` kopieren.
    - Am besten exportiert ein Mitglied, das viele Bilder **empfangen** hat. Beim Absender liegen eigene Bilder in anderer Form vor, etwa HD in zwei Größen. Das erkennt der Worker aber als Duplikat.
@@ -326,6 +328,7 @@ Nach `sudo docker compose up -d` unter `http://<NAS-IP>:8081` aufrufen, Benutzer
   - *Automatisch* (wie 📸): Bilder mit Termin in ihren Terminordner, Bilder ohne Termin nach `Fotos-Eingang/…/<Datum> Markiert` (dort von Hand einsortieren).
   - *Terminordner:* Auswahl aus den vorhandenen Terminordnern, neueste zuerst.
   - *Jahres-Sammelordner* für schöne Einzelbilder ohne Termin: `Fotos/<Jahr>/<Jahr> Allgemein` (Name über `GENERAL_FOLDER`).
+- *Import:* WhatsApp-Export (ZIP, „Medien einbeziehen“) hochladen, z. B. um eine Lücke nach einem Bot-Ausfall zu schließen. „Ab Datum“ ist mit dem Tag des neuesten schon übernommenen Bildes vorbelegt; Vorhandenes wird übersprungen. Upload mit Fortschrittsbalken, Import im Hintergrund mit Restzeit, danach eine Übersicht (in der Galerie, Quarantäne, schon vorhanden …). Die ZIP-Datei enthält alle Chat-Texte und wird nach dem Import sofort gelöscht, auch bei einem Fehler oder Neustart. Höchstens 8 GB.
 - *Duplikate:* „Prüfung starten“ – läuft im Hintergrund mit Fortschritt und Restzeit (Fingerabdrücke nachtragen, vergleichen, Vorschaubilder vorbereiten). Verglichen werden WhatsApp-Bilder untereinander (±15 min) und Fotografen-Uploads mit den WhatsApp-Bildern desselben Termins, egal wie viele Tage dazwischen liegen. Dann je Paar „Rechts (kleiner) löschen“ (Vorschlag), „Links (größer) löschen“ (wenn absichtlich die kleinere bleiben soll), „beide behalten“ oder „später“ und „Auswahl ausführen“. Gelöscht wird immer nur die Kopie in der Nextcloud, beide Originale bleiben im Archiv. Das Ergebnis bleibt bis zur nächsten Prüfung bzw. bis zum Neustart des Workers stehen.
 - Nur im eigenen Netz bzw. über VPN nutzen und den Port **nie** im Router freigeben: Das Portal zeigt Quarantäne-Bilder. Für HTTPS kann der Reverse-Proxy von DSM davorgeschaltet werden (*Systemsteuerung → Anmeldeportal → Erweitert → Reverse Proxy*).
 - Aktionen landen in einer Warteschlange: Die Seite kommt sofort zurück, oben steht „Aufträge werden ausgeführt: 3 von 12“, betroffene Bilder sind ausgegraut, ein zweiter Klick wird ignoriert. Seite wechseln oder schließen ist kein Problem. Läuft gerade ein großer Auftrag (z. B. Fotografen-Upload), wartet die Warteschlange darauf („wartet auf …“). Nach einem Neustart des Workers sind noch nicht erledigte Aufträge verworfen; die Bilder bleiben dann einfach, wo sie waren.

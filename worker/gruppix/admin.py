@@ -15,23 +15,27 @@ from __future__ import annotations
 import base64
 import hmac
 import html
+import json
 import logging
 import secrets
+import shutil
 import threading
 import time
+import zipfile
 from collections import Counter, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import IO, TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from . import jobs, media
 from .config import Config
 from .db import Database, State
+from .ingest_export import ingest_export, read_export, select_period, source_id
 from .pipeline import SIMILAR_MAX_BITS, Pipeline
 from .review import SOURCE_LABEL, STYLE, german_day, thumbnail_jpeg
 from .sinks import LocalSink
@@ -46,6 +50,20 @@ ADMIN_USER = "admin"
 _MAX_FORM_BYTES = 1 << 20
 _LOG_LINES = 300
 _SMALL, _LARGE = 320, 480    # thumbnail edge: quarantine grid, duplicate pairs
+_MAX_UPLOAD = 8 << 30        # 8 GiB: a long chat export with videos
+_UPLOAD_DIR = "import-uploads"  # below DATA_DIR; emptied after each import (the ZIP holds all chat texts)
+_IMPORT_STATES = {
+    State.UPLOADED: "in die Galerie übernommen",
+    State.READY: "warten auf den Upload",
+    State.HELD: "zurückgehalten (Termin hat noch zu wenige Bilder)",
+    State.QUARANTINED: "in der Quarantäne",
+    State.DUPLICATE: "schon vorhanden (Duplikat)",
+    "known": "schon früher importiert",
+    State.REMOVED: "früher gelöscht, bleiben weg",
+    State.SKIPPED: "Absender hat „Stopp“ geschickt",
+    State.REJECTED: "abgelehnt (z. B. Video zu lang)",
+    State.FAILED: "fehlgeschlagen",
+}
 
 _JOB_LABELS = {
     "import-drop": "Fotografen-Uploads abholen",
@@ -102,6 +120,35 @@ class DuplicateScan:
             return None
         elapsed = time.monotonic() - self.phase_started
         return int(elapsed / self.done * (self.total - self.done))
+
+
+@dataclass
+class ImportJob:
+    """A WhatsApp export uploaded in the portal and imported in the background."""
+
+    running: bool = False
+    name: str = ""
+    step: str = ""
+    done: int = 0
+    total: int = 0
+    phase_started: float = 0.0
+    started: datetime | None = None
+    finished: datetime | None = None
+    period: str = ""
+    results: Counter[str] = field(default_factory=Counter)
+    clusters: list[str] = field(default_factory=list)
+    waiting_for: str | None = None
+    error: str | None = None
+
+    def remaining(self) -> int | None:
+        if not self.done or self.total <= self.done:
+            return None
+        elapsed = time.monotonic() - self.phase_started
+        return int(elapsed / self.done * (self.total - self.done))
+
+
+class ImportProblem(RuntimeError):
+    """Shown to the admin as is (German text)."""
 
 
 @dataclass(frozen=True)
@@ -256,6 +303,10 @@ class AdminPortal:
         self.scan = DuplicateScan()
         self._scan_lock = threading.Lock()
         self.queue = ActionQueue(self.apply, self._busy_job)
+        self.importing = ImportJob()
+        self._import_lock = threading.Lock()
+        # Leftovers of an import interrupted by a restart: chat texts must not linger.
+        shutil.rmtree(cfg.data_dir / _UPLOAD_DIR, ignore_errors=True)
 
     # --- request entry -----------------------------------------------------------
 
@@ -276,6 +327,7 @@ class AdminPortal:
             pages: dict[str, Callable[[dict[str, list[str]]], Response]] = {
                 "/": self.overview, "/quarantine": self.quarantine,
                 "/duplicates": self.duplicates, "/thumb": self.thumb, "/queue": self.queue_status,
+                "/import": self.import_page,
             }
             page = pages.get(route)
             return page(query) if page else self._page("Nicht gefunden", "<p>Diese Seite gibt es nicht.</p>", code=404)
@@ -601,8 +653,6 @@ class AdminPortal:
         return _redirect("/duplicates")
 
     def queue_status(self, query: dict[str, list[str]]) -> Response:
-        import json
-
         return Response(200, json.dumps(self.queue.status(), ensure_ascii=False).encode(),
                         "application/json; charset=utf-8", {"Cache-Control": "no-store"})
 
@@ -649,6 +699,174 @@ class AdminPortal:
             finally:
                 db.close()
 
+    # --- WhatsApp export import ------------------------------------------------------
+
+    def import_page(self, query: dict[str, list[str]]) -> Response:
+        job = self.importing
+        if job.running:
+            count = f" · {job.done} von {job.total}" if job.total else ""
+            left = job.remaining()
+            eta = "" if left is None else (" · noch unter einer Minute" if left < 60 else f" · noch etwa {left // 60 + 1} min")
+            wait = f" · wartet auf „{_e(job.waiting_for)}“" if job.waiting_for else ""
+            body = (f'<div class="card scan"><p><span class="spinner"></span> <b>Import läuft</b> – '
+                    f'{_e(job.name)}{" (" + _e(job.period) + ")" if job.period else ""}</p>'
+                    f'<p>{_e(job.step)}{count}{eta}{wait}</p>'
+                    f'<progress max="{max(job.total, 1)}" value="{job.done}"></progress>'
+                    '<p class="muted">Die Seite aktualisiert sich von selbst. Du kannst sie schließen; '
+                    "der Import läuft weiter.</p></div>")
+            return self._page("Import", body, refresh=3)
+        last = ""
+        if job.finished:
+            if job.error:
+                last = f'<p class="flash warn">Import von {_e(job.name)} abgebrochen: {_e(job.error)}</p>'
+            else:
+                lines = "".join(f"<li>{n} {_e(_IMPORT_STATES.get(state, state))}</li>"
+                                for state, n in sorted(job.results.items(), key=lambda kv: -kv[1]))
+                clusters = ("<p>Häufungen ohne Termin, jetzt in Fotos-Eingang: "
+                            + ", ".join(_e(c) for c in job.clusters) + "</p>") if job.clusters else ""
+                took = int((job.finished - job.started).total_seconds()) if job.started else 0
+                last = (f'<div class="flash"><p><b>Import fertig</b>: {_e(job.name)} ({_e(job.period)}, '
+                        f"Dauer {_duration(took)})</p><ul>{lines}</ul>{clusters}"
+                        '<p>Bilder in der Quarantäne kannst du <a href="/quarantine">hier</a> übernehmen.</p></div>')
+        db = Database(self.cfg.db_path)
+        try:
+            latest = db.latest_message_ts(("export", "waha"))
+        finally:
+            db.close()
+        since = f"{datetime.fromtimestamp(latest, self.cfg.tz):%Y-%m-%d}" if latest else ""
+        hint = (f" Vorgeschlagen ist der Tag des neuesten schon übernommenen Bildes ({datetime.fromtimestamp(latest, self.cfg.tz):%d.%m.%Y}); "
+                "was schon da ist, wird übersprungen.") if latest else ""
+        body = (
+            last
+            + '<p class="lead">WhatsApp-Export der Gruppe hochladen, z. B. um eine Lücke nach einem Ausfall des '
+            "Bots zu schließen: in WhatsApp Gruppe → ⋮ → <i>Mehr</i> → <i>Chat exportieren</i> → "
+            "<b>Medien einbeziehen</b>, die ZIP-Datei hier auswählen. Bilder und Videos laufen durch dieselben "
+            "Regeln wie live. Die ZIP-Datei enthält auch alle Texte des Chats; sie wird nach dem Import sofort "
+            f"gelöscht.{hint}</p>"
+            '<form id="up" class="card importform">'
+            '<label>Export-Datei (.zip)<input type="file" id="zip" accept=".zip,application/zip" required></label>'
+            f'<label>Ab Datum<input type="date" id="since" value="{since}"></label>'
+            '<label>Bis Datum (optional)<input type="date" id="until"></label>'
+            '<label>Datumsformat im Chat<select id="order"><option value="dmy" selected>TT.MM.JJ (deutsch)</option>'
+            '<option value="mdy">MM/TT/JJ (englisch, USA)</option></select></label>'
+            '<div class="row"><button type="submit" id="go">Hochladen und importieren</button>'
+            '<progress id="bar" max="100" value="0" hidden></progress><span id="msg" class="muted"></span></div>'
+            "</form>"
+        )
+        return self._page("Import", body, script=_IMPORT_JS)
+
+    def receive_upload(self, path: str, headers: dict[str, str], stream: IO[bytes], length: int,
+                       client: str = "?") -> Response:
+        """POST /import/upload: the ZIP as raw body, streamed to disk, then imported in the background."""
+        headers = {k.lower(): v for k, v in headers.items()}
+        if not self._authorized(headers):
+            return Response(401, b"", "text/plain", {"WWW-Authenticate": 'Basic realm="gruppix", charset="UTF-8"'})
+        if not _same_origin(headers):
+            log.warning("admin: rejected upload without matching Origin from %s", client)
+            return _json(403, error="Anfrage nicht von dieser Seite")
+        query = parse_qs(urlsplit(path).query)
+        name = Path((query.get("name") or [""])[0]).name
+        try:
+            since = date.fromisoformat(query["since"][0]) if query.get("since", [""])[0] else None
+            until = date.fromisoformat(query["until"][0]) if query.get("until", [""])[0] else None
+        except ValueError:
+            return _json(400, error="Datum ungültig")
+        order = (query.get("order") or ["dmy"])[0]
+        if not name.lower().endswith(".zip") or order not in ("dmy", "mdy"):
+            return _json(400, error="Bitte die ZIP-Datei des WhatsApp-Exports wählen")
+        if since and until and since > until:
+            return _json(400, error="„Ab“ liegt nach „Bis“")
+        if self.service.nextcloud is None:
+            return _json(400, error="Nextcloud ist nicht eingerichtet")
+        if length <= 0 or length > _MAX_UPLOAD:
+            return _json(413, error=f"Datei zu groß (höchstens {_MAX_UPLOAD >> 30} GB)")
+        self.cfg.data_dir.mkdir(parents=True, exist_ok=True)
+        if shutil.disk_usage(self.cfg.data_dir).free < length + (1 << 30):
+            return _json(507, error="Zu wenig Speicherplatz auf dem Server")
+        with self._import_lock:
+            if self.importing.running:
+                return _json(409, error="Es läuft bereits ein Import")
+            job = ImportJob(running=True, name=name, step="Hochladen", started=datetime.now(self.cfg.tz))
+            self.importing = job
+        folder = self.cfg.data_dir / _UPLOAD_DIR / datetime.now(self.cfg.tz).strftime("%Y%m%d-%H%M%S")
+        target = folder / name  # keeps the export's name: it is part of the stored ids (re-imports match)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            remaining = length
+            with target.open("wb") as out:
+                while remaining:
+                    chunk = stream.read(min(1 << 20, remaining))
+                    if not chunk:
+                        raise ImportProblem("Upload abgebrochen")
+                    out.write(chunk)
+                    remaining -= len(chunk)
+            if not zipfile.is_zipfile(target):
+                raise ImportProblem("Keine gültige ZIP-Datei")
+        except (ImportProblem, OSError) as exc:
+            shutil.rmtree(folder, ignore_errors=True)
+            job.error, job.finished, job.running = str(exc), datetime.now(self.cfg.tz), False
+            return _json(400, error=str(exc))
+        log.info("admin (%s): export %s uploaded (%d MB), importing", client, name, length >> 20)
+        threading.Thread(target=self.run_import, args=(job, target, since, until, order),
+                         name="export-import", daemon=True).start()
+        return _json(202, ok=True)
+
+    def run_import(self, job: ImportJob, zip_path: Path, since: date | None, until: date | None,
+                   order: str = "dmy") -> None:
+        cfg = self.cfg
+        try:
+            job.step = "Chat lesen"
+            content = read_export(zip_path, cfg.tz, order)
+            content = select_period(content, since, until)
+            if not content.messages:
+                raise ImportProblem("Keine Fotos oder Videos im gewählten Zeitraum gefunden")
+            first = min(m.sent_at for m in content.messages)
+            last = max(m.sent_at for m in content.messages)
+            job.period, job.total = f"{first:%d.%m.%Y} – {last:%d.%m.%Y}", len(content.messages)
+            job.step = "Kalender laden"
+            calendar = jobs.build_calendar(cfg, first - cfg.late_grace - timedelta(days=7),
+                                           last + cfg.window_pre + timedelta(days=1))
+            job.step = "Bilder übernehmen"
+            while True:
+                try:
+                    with jobs.pipeline_lock(cfg):
+                        job.waiting_for, job.done, job.phase_started = None, 0, time.monotonic()
+                        db = Database(cfg.db_path)
+                        try:
+                            pipeline = Pipeline(cfg, db, calendar, self.service.nextcloud)
+
+                            def progress(done: int, total: int) -> None:
+                                job.done = done
+
+                            ids = [f"export:{source_id(content, m)}" for m in content.messages]
+                            known = {i for i in ids if db.exists(i)}
+                            ingest_export(zip_path, content, pipeline, progress)
+                            job.step = "Termine abschließen"
+                            pipeline.settle_held(datetime.now(cfg.tz))
+                            job.clusters = pipeline.promote_clusters()
+                            # Final state of each new item (a held item may have been published by a later one)
+                            results: Counter[str] = Counter({"known": len(known)} if known else {})
+                            for media_id in ids:
+                                if media_id not in known and db.exists(media_id):
+                                    results[db.get(media_id)["state"]] += 1
+                            job.results = results
+                        finally:
+                            db.close()
+                    break
+                except jobs.Busy:
+                    job.waiting_for = self._busy_job()
+                    time.sleep(10)
+            log.info("portal import %s: %s", job.name, dict(job.results))
+        except (ImportProblem, ValueError) as exc:
+            job.error = str(exc)
+        except Exception as exc:  # noqa: BLE001 - shown on the page
+            log.exception("portal import failed")
+            job.error = f"{type(exc).__name__}: {exc}"[:300]
+        finally:
+            shutil.rmtree(zip_path.parent, ignore_errors=True)
+            job.finished = datetime.now(cfg.tz)
+            job.running = False
+
     # --- helpers -------------------------------------------------------------------
 
     def _pipeline(self, db: Database, gallery: bool = False) -> Pipeline:
@@ -692,7 +910,8 @@ class AdminPortal:
         nonce = secrets.token_urlsafe(16)
         nav = "".join(
             f'<a href="{href}"{" class=on" if label == title else ""}>{label}</a>'
-            for href, label in (("/", "Übersicht"), ("/quarantine", "Quarantäne"), ("/duplicates", "Duplikate"))
+            for href, label in (("/", "Übersicht"), ("/quarantine", "Quarantäne"), ("/duplicates", "Duplikate"),
+                                ("/import", "Import"))
         )
         script = _COMMON_JS + script
         page = (
@@ -732,6 +951,10 @@ def _same_origin(headers: dict[str, str]) -> bool:
     return bool(netloc) and netloc in hosts
 
 
+def _json(code: int, **body: Any) -> Response:
+    return Response(code, json.dumps(body, ensure_ascii=False).encode(), "application/json; charset=utf-8")
+
+
 def _redirect(path: str, **params: Any) -> Response:
     query = urlencode({k: v for k, v in params.items() if v})
     return Response(303, b"", "text/plain", {"Location": path + (f"?{query}" if query else "")})
@@ -768,6 +991,16 @@ def handler(portal: AdminPortal) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:  # noqa: N802 - http.server API
             length = int(self.headers.get("Content-Length") or 0)
+            if self.path.startswith("/import/upload"):
+                try:
+                    response = portal.receive_upload(self.path, dict(self.headers.items()), self.rfile, length,
+                                                     client=self.client_address[0])
+                except Exception:  # noqa: BLE001
+                    log.exception("admin: upload failed")
+                    response = _json(500, error="Interner Fehler – siehe Protokoll")
+                self.close_connection = response.code != 202
+                self._answer(response)
+                return
             if length > _MAX_FORM_BYTES:
                 self._answer(Response(413, b"too large", "text/plain"))
                 return
@@ -866,6 +1099,16 @@ form.inline button, .bar button { font:inherit; padding:8px 14px; border:0; bord
 .bar button:disabled { opacity:.5; cursor:default; }
 .queue { margin:0 0 16px; } #queue.flash { margin:0 0 16px; }
 .tile.queued { opacity:.55; cursor:default; }
+.importform { display:grid; gap:14px; max-width:560px; padding:16px; }
+.importform label { display:grid; gap:4px; font-weight:600; }
+.importform input, .importform select { font:inherit; font-weight:400; padding:7px 8px; border:1px solid var(--line);
+                                        border-radius:6px; background:var(--bg); color:var(--text); }
+.importform .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+.importform button { font:inherit; padding:8px 14px; border:0; border-radius:6px; background:var(--accent);
+                     color:#fff; cursor:pointer; }
+.importform button:disabled { opacity:.5; cursor:default; }
+.importform progress { flex:1; min-width:160px; height:10px; accent-color:var(--accent); }
+.flash ul { margin:6px 0; padding-left:20px; } .flash p { margin:4px 0; } div.flash { margin:0 0 16px; }
 .bar .target { display:inline-flex; gap:6px; align-items:center; }
 @media (max-width:600px) { .bar #sum { flex-basis:100%; } }
 .bar select { font:inherit; padding:7px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg);
@@ -897,6 +1140,36 @@ async function poll() {
   } catch (e) { setTimeout(poll, 5000); }
 }
 if (banner && banner.dataset.active === '1') setTimeout(poll, 2000);
+"""
+
+_IMPORT_JS = """
+const upForm = document.getElementById('up');
+upForm.addEventListener('submit', e => {
+  e.preventDefault();
+  const file = document.getElementById('zip').files[0];
+  const go = document.getElementById('go'), bar = document.getElementById('bar'), msg = document.getElementById('msg');
+  if (!file) return;
+  const q = new URLSearchParams({name: file.name, since: document.getElementById('since').value,
+                                 until: document.getElementById('until').value, order: document.getElementById('order').value});
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/import/upload?' + q.toString());
+  xhr.setRequestHeader('Content-Type', 'application/zip');
+  bar.hidden = false; go.disabled = true; go.textContent = 'Wird hochgeladen …';
+  xhr.upload.onprogress = ev => {
+    if (ev.lengthComputable) {
+      bar.value = Math.round(ev.loaded / ev.total * 100);
+      msg.textContent = (ev.loaded / 1048576).toFixed(0) + ' von ' + (ev.total / 1048576).toFixed(0) + ' MB';
+    }
+  };
+  xhr.onload = () => {
+    if (xhr.status === 202) { location.href = '/import'; return; }
+    let text = 'Fehler ' + xhr.status;
+    try { text = JSON.parse(xhr.responseText).error || text; } catch (err) {}
+    msg.textContent = text; go.disabled = false; go.textContent = 'Hochladen und importieren';
+  };
+  xhr.onerror = () => { msg.textContent = 'Verbindung abgebrochen'; go.disabled = false; go.textContent = 'Hochladen und importieren'; };
+  xhr.send(file);
+});
 """
 
 _QUARANTINE_JS = """

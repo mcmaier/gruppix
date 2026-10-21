@@ -217,3 +217,94 @@ def test_release_into_chosen_event_or_yearly_collection(portal, db, make_pipelin
     assert db.get("waha:Q1")["remote_path"].startswith("Fotos/2026/2026 Allgemein/")
     assert db.get("waha:Q2")["state"] == State.QUARANTINED   # unknown target: nothing done
     assert "1 in den Jahres-Sammelordner übernommen" in portal.queue.status()["summary"]
+
+
+# --- WhatsApp export import -------------------------------------------------------------
+
+def _export_zip(tmp_path, name="WhatsApp Chat mit Verein.zip"):
+    import zipfile
+
+    path = tmp_path / name
+    lines = ["11.07.26, 09:00 - Nachrichten und Anrufe sind Ende-zu-Ende-verschlüsselt.",
+             "11.07.26, 15:00 - Anna: Wer bringt Bier mit?"]
+    with zipfile.ZipFile(path, "w") as zf:
+        for n in range(3):
+            img = f"IMG-20260711-WA000{n}.jpg"
+            zf.write(_photo(tmp_path, f"x{n}.jpg", 60 + n), img)
+            lines.append(f"11.07.26, 16:0{n} - Anna: {img} (Datei angehängt)")
+        zf.writestr("_chat.txt", "\n".join(lines))
+    return path
+
+
+def _wait_import(portal):
+    for thread in threading.enumerate():
+        if thread.name == "export-import":
+            thread.join(timeout=30)
+    assert not portal.importing.running
+
+
+@pytest.fixture
+def calendar_x(monkeypatch, cfg):
+    from gruppix.events import EventCalendar
+
+    monkeypatch.setattr(admin.jobs, "build_calendar",
+                        lambda _cfg, start, end: EventCalendar([X], cfg.window_pre, cfg.window_post, cfg.late_grace))
+
+
+def test_import_export_from_the_portal(portal, db, tmp_path, gallery, calendar_x):
+    import io
+
+    data = _export_zip(tmp_path).read_bytes()
+    page = portal.dispatch("GET", "/import", AUTH).body.decode()
+    assert 'id="zip"' in page and "Medien einbeziehen" in page
+
+    path = "/import/upload?" + _form(name="WhatsApp Chat mit Verein.zip", since="2026-07-01", until="", order="dmy").decode()
+    answer = portal.receive_upload(path, POST, io.BytesIO(data), len(data))
+    assert answer.code == 202
+    _wait_import(portal)
+    job = portal.importing
+    assert job.error is None and job.results[State.UPLOADED] == 3 and job.period == "11.07.2026 – 11.07.2026"
+    assert len(published(gallery)) == 3
+    assert not any((portal.cfg.data_dir / "import-uploads").glob("*/*"))     # chat texts gone
+    assert "Import fertig" in portal.dispatch("GET", "/import", AUTH).body.decode()
+
+    # the same export again: everything is known, nothing doubled
+    answer = portal.receive_upload(path, POST, io.BytesIO(data), len(data))
+    _wait_import(portal)
+    assert portal.importing.results == {"known": 3} and len(published(gallery)) == 3
+
+
+def test_import_upload_is_checked(portal, tmp_path, calendar_x):
+    import io
+
+    ok = "/import/upload?name=chat.zip"
+    data = _export_zip(tmp_path, "chat.zip").read_bytes()
+    evil = {**AUTH, "Host": "nas:8081", "Origin": "http://evil.example"}
+    assert portal.receive_upload(ok, evil, io.BytesIO(data), len(data)).code == 403
+    assert portal.receive_upload(ok, {}, io.BytesIO(data), len(data)).code == 401
+    assert portal.receive_upload("/import/upload?name=chat.txt", POST, io.BytesIO(data), len(data)).code == 400
+    bad = portal.receive_upload(ok, POST, io.BytesIO(b"not a zip"), 9)
+    assert bad.code == 400 and "ZIP" in json.loads(bad.body)["error"]
+    portal.importing = admin.ImportJob(running=True)
+    assert portal.receive_upload(ok, POST, io.BytesIO(data), len(data)).code == 409
+    portal.importing = admin.ImportJob()
+    empty = "/import/upload?name=chat.zip&since=2030-01-01"
+    assert portal.receive_upload(empty, POST, io.BytesIO(data), len(data)).code == 202
+    _wait_import(portal)
+    assert "Keine Fotos oder Videos" in portal.importing.error
+
+
+def test_import_upload_over_http(portal, tmp_path, gallery, calendar_x):
+    data = _export_zip(tmp_path).read_bytes()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), admin.handler(portal))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        host = f"127.0.0.1:{server.server_address[1]}"
+        req = urllib.request.Request(f"http://{host}/import/upload?name=chat.zip", data=data, method="POST",
+                                     headers={**AUTH, "Origin": f"http://{host}", "Content-Type": "application/zip"})
+        with urllib.request.urlopen(req) as answer:
+            assert answer.status == 202
+        _wait_import(portal)
+        assert portal.importing.results[State.UPLOADED] == 3
+    finally:
+        server.shutdown()

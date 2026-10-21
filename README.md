@@ -6,6 +6,10 @@ Mitglieder posten wie gewohnt in der Gruppe. gruppix ordnet jedes Bild über den
 
 > **Vor dem Einsatz lesen:** Die Live-Übernahme nutzt eine **inoffizielle WhatsApp-Schnittstelle**; die Bot-Nummer kann gesperrt werden ([Live-Funktion](#live-funktion-whatsapp-bot)). Ohne sie arbeitet gruppix mit dem Export-Import. Für den Datenschutz ist der Verein verantwortlich, der gruppix betreibt ([Datenschutz](#datenschutz-und-verantwortung)).
 
+![Admin-Portal von gruppix: Bilder aus der Quarantäne ankreuzen und in einen Terminordner oder den Jahres-Sammelordner übernehmen](docs/admin-portal.png)
+
+*Admin-Portal: Bilder ohne Termin aus der Quarantäne übernehmen (Beispielbilder).*
+
 ```
 WhatsApp-Gruppe ──(Export-ZIP / live über WAHA-Bot) ───────────┐
 Kalender (Google, Konzertmeister) ─────────────────────────────┤
@@ -97,7 +101,7 @@ LICENSE                MIT
 Läuft auf jedem Docker-Host mit Compose v2, z. B. einer Synology mit Container Manager oder einem Linux-Server. Ausführlich in [docs/setup.md](docs/setup.md).
 
 ```bash
-git clone <Repo-URL> gruppix && cd gruppix
+git clone https://github.com/mcmaier/gruppix && cd gruppix
 cp .env.example .env && chmod 600 .env       # fill in, incl. ARCHIVE_PATH
 mkdir -p import data/waha-sessions data/waha-media data/worker
 docker compose build worker
@@ -107,7 +111,7 @@ docker compose exec -T worker python -m gruppix notify-test
 
 ## Admin-Portal
 
-Mit `ADMIN_PASSWORD` in der `.env` zeigt der Worker im lokalen Netz eine Admin-Oberfläche (Port 8081, Benutzer `admin`): Zustand und Protokoll, Quarantäne mit Vorschau zum Übernehmen in die Galerie, doppelte Bilder zum Löschen. Nur im LAN bzw. über VPN, nie über den Router freigeben. Details: [docs/setup.md](docs/setup.md), Abschnitt 8.
+Mit `ADMIN_PASSWORD` in der `.env` zeigt der Worker im lokalen Netz eine Admin-Oberfläche (Port 8081, Benutzer `admin`): Zustand und Protokoll, Quarantäne mit Vorschau zum Übernehmen in die Galerie, doppelte Bilder zum Löschen, Import eines WhatsApp-Exports per Upload. Nur im LAN bzw. über VPN, nie über den Router freigeben. Details: [docs/setup.md](docs/setup.md), Abschnitt 8.
 
 ## Befehle
 

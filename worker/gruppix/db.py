@@ -263,6 +263,12 @@ class Database:
     def event_info(self, event_key: str) -> sqlite3.Row | None:
         return self._conn.execute("SELECT * FROM events WHERE event_key = ?", (event_key,)).fetchone()
 
+    def latest_message_ts(self, sources: tuple[str, ...]) -> int | None:
+        """Send time of the newest stored message from these sources (import suggestion)."""
+        src = ",".join("?" * len(sources))
+        row = self._conn.execute(f"SELECT MAX(msg_ts) AS ts FROM media WHERE source IN ({src})", sources).fetchone()
+        return row["ts"] if row and row["ts"] else None
+
     def recent_events(self, limit: int = 60) -> list[sqlite3.Row]:
         """Events that already have a gallery folder, newest first (admin portal)."""
         return self._conn.execute(

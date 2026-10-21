@@ -16,7 +16,7 @@ import shutil
 import tempfile
 import zipfile
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path, PurePosixPath
@@ -133,17 +133,26 @@ def _parse_time(match: re.Match[str], tz: ZoneInfo, date_order: str) -> datetime
     return datetime(year, month, day, hour, minute, second, tzinfo=tz)
 
 
-def ingest_export(zip_path: Path, content: ExportContent, pipeline: Pipeline) -> Counter[str]:
-    """Feed all attachments of an export through the pipeline."""
+def source_id(content: ExportContent, message: ExportMessage) -> str:
+    """Stable id of an attachment: export name + file name (a re-import finds it again)."""
+    return f"{content.chat_id}/{PurePosixPath(message.member).name}"
+
+
+def ingest_export(zip_path: Path, content: ExportContent, pipeline: Pipeline,
+                  progress: Callable[[int, int], None] | None = None) -> Counter[str]:
+    """Feed all attachments of an export through the pipeline.
+
+    ``progress(done, total)`` is called after each attachment (admin portal)."""
     results: Counter[str] = Counter()
+    total = len(content.messages)
     with zipfile.ZipFile(zip_path) as zf, tempfile.TemporaryDirectory(prefix="gruppix-") as tmp:
-        for message in content.messages:
+        for done, message in enumerate(content.messages, start=1):
             target = Path(tmp) / PurePosixPath(message.member).name
             with zf.open(message.member) as src, target.open("wb") as dst:
                 shutil.copyfileobj(src, dst)
             item = IncomingMedia(
                 source="export",
-                source_id=f"{content.chat_id}/{PurePosixPath(message.member).name}",
+                source_id=source_id(content, message),
                 chat_id=content.chat_id,
                 sender=message.sender,
                 sent_at=message.sent_at,
@@ -152,4 +161,6 @@ def ingest_export(zip_path: Path, content: ExportContent, pipeline: Pipeline) ->
             )
             results[pipeline.ingest(item)] += 1
             target.unlink(missing_ok=True)
+            if progress is not None:
+                progress(done, total)
     return results
