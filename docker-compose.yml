@@ -1,0 +1,68 @@
+# gruppix: WAHA (WhatsApp gateway) + worker (filter, process, archive, upload)
+# Runs on any Docker host with Compose v2 (Synology Container Manager, Linux server).
+# Paths and ports come from .env (read by Compose for ${...} and by the worker).
+#
+#   docker compose up -d                                    WAHA + worker service
+#   docker compose exec -T worker python -m gruppix status  one-off commands inside the service
+
+services:
+  waha:
+    image: devlikeapro/waha:latest
+    container_name: gruppix-waha
+    restart: unless-stopped
+    ports:
+      # Dashboard is needed once for QR pairing. WAHA_BIND=127.0.0.1 on a public
+      # server (then use an SSH tunnel); 0.0.0.0 on a NAS in the LAN.
+      - "${WAHA_BIND:-127.0.0.1}:3000:3000"
+    environment:
+      TZ: Europe/Berlin
+      WHATSAPP_DEFAULT_ENGINE: GOWS            # whatsmeow-based, no Chromium
+      WAHA_BASE_URL: http://waha:3000          # media.url reachable from worker
+      WAHA_API_KEY: ${WAHA_API_KEY}
+      WAHA_DASHBOARD_USERNAME: admin
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD}
+      WHATSAPP_SWAGGER_USERNAME: admin
+      WHATSAPP_SWAGGER_PASSWORD: ${WAHA_DASHBOARD_PASSWORD}
+      WHATSAPP_RESTART_ALL_SESSIONS: "True"
+      WAHA_CLIENT_DEVICE_NAME: Gruppix     # label under "Linked devices"
+      WAHA_PRESENCE_AUTO_ONLINE: "False"       # passive bot, never appear online
+      # Webhooks → worker (internal network only)
+      WHATSAPP_HOOK_URL: http://worker:8080/webhook
+      WHATSAPP_HOOK_EVENTS: message,message.reaction,message.revoked,session.status
+      WHATSAPP_HOOK_HMAC_KEY: ${HOOK_HMAC_KEY}
+      WHATSAPP_HOOK_RETRIES_POLICY: exponential
+      WHATSAPP_HOOK_RETRIES_ATTEMPTS: "8"
+      # Only download what we may archive (data minimisation)
+      WAHA_EVENTS_DOWNLOAD_MEDIA: "true"
+      WAHA_EVENTS_DOWNLOAD_MEDIA_MIMETYPES: image,video
+      WHATSAPP_FILES_FOLDER: /app/.media
+      WHATSAPP_FILES_LIFETIME: "3600"          # worker fetches within seconds; 1 h safety margin
+      WAHA_SESSION_CONFIG_IGNORE_STATUS: "true"
+      WAHA_SESSION_CONFIG_IGNORE_CHANNELS: "true"
+      WAHA_SESSION_CONFIG_IGNORE_BROADCAST: "true"
+    volumes:
+      - ./data/waha-sessions:/app/.sessions
+      - ./data/waha-media:/app/.media
+
+  worker:
+    build: ./worker
+    container_name: gruppix-worker
+    restart: unless-stopped
+    init: true                                 # proper signal handling for docker stop
+    env_file: .env
+    environment:
+      TZ: Europe/Berlin
+      WAHA_URL: http://waha:3000
+      DATA_DIR: /data
+      ARCHIVE_DIR: /archive
+    volumes:
+      - ./data/worker:/data                    # state.sqlite, staging, outbox, calendar cache
+      - ./import:/import:ro                    # WhatsApp exports (ZIP) for import-export
+      - ${ARCHIVE_PATH:?set ARCHIVE_PATH in .env}:/archive   # originals as received
+    depends_on:
+      - waha
+    healthcheck:
+      test: ["CMD", "python", "-m", "gruppix.healthcheck"]
+      interval: 60s
+      timeout: 5s
+      retries: 3

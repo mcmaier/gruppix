@@ -1,0 +1,444 @@
+[
+ {
+  "name": "image",
+  "body": {
+   "id": "evt_01m4y428qrj434trz0xqdhqe0k",
+   "timestamp": 1792012264482,
+   "event": "message",
+   "session": "default",
+   "metadata": {},
+   "me": {
+    "id": "4900000000001@c.us"
+   },
+   "payload": {
+    "id": "false_120363000000000001@g.us_AC535E12D1B6B857EBD0865BA96F38D9_100000000000001@lid",
+    "timestamp": 1792012262,
+    "from": "120363000000000001@g.us",
+    "fromMe": false,
+    "source": "app",
+    "to": "100000000000001@lid",
+    "participant": "100000000000001@lid",
+    "hasMedia": true,
+    "media": {
+     "url": "http://waha:3000/api/files/default/AC535E12D1B6B857EBD0865BA96F38D9.jpeg",
+     "mimetype": "image/jpeg"
+    },
+    "ack": 2,
+    "location": null,
+    "vCards": null,
+    "ackName": "DEVICE",
+    "replyTo": null
+   },
+   "engine": "GOWS"
+  }
+ },
+ {
+  "name": "image_hd",
+  "body": {
+   "id": "evt_01m4y43s9zej1fbvf45nxkdn4q",
+   "timestamp": 1792012313919,
+   "event": "message",
+   "session": "default",
+   "metadata": {},
+   "me": {
+    "id": "4900000000001@c.us"
+   },
+   "payload": {
+    "id": "false_120363000000000001@g.us_AC4603593A44E97FCFF06A1F43A48F37_100000000000001@lid",
+    "timestamp": 1792012313,
+    "from": "120363000000000001@g.us",
+    "fromMe": false,
+    "source": "app",
+    "to": "100000000000001@lid",
+    "participant": "100000000000001@lid",
+    "hasMedia": true,
+    "media": {
+     "url": "http://waha:3000/api/files/default/AC4603593A44E97FCFF06A1F43A48F37.jpeg",
+     "mimetype": "image/jpeg"
+    },
+    "ack": 2,
+    "location": null,
+    "vCards": null,
+    "ackName": "DEVICE",
+    "replyTo": null
+   },
+   "engine": "GOWS"
+  }
+ },
+ {
+  "name": "document_jpeg",
+  "body": {
+   "id": "evt_01m4y45xkd573hte5nbwexv1b1",
+   "timestamp": 1792012383853,
+   "event": "message",
+   "session": "default",
+   "metadata": {},
+   "me": {
+    "id": "4900000000001@c.us"
+   },
+   "payload": {
+    "id": "false_120363000000000001@g.us_ACA55CF3271E4BFCCB265F7CBD9288C5_100000000000001@lid",
+    "timestamp": 1792012382,
+    "from": "120363000000000001@g.us",
+    "fromMe": false,
+    "source": "app",
+    "to": "100000000000001@lid",
+    "participant": "100000000000001@lid",
+    "hasMedia": true,
+    "media": {
+     "url": "http://waha:3000/api/files/default/ACA55CF3271E4BFCCB265F7CBD9288C5.jpeg",
+     "filename": "IMG_20261011_155507.jpg",
+     "mimetype": "image/jpeg"
+    },
+    "ack": 2,
+    "location": null,
+    "vCards": null,
+    "ackName": "DEVICE",
+    "replyTo": null
+   },
+   "engine": "GOWS"
+  }
+ },
+ {
+  "name": "album_header",
+  "body": {
+   "id": "evt_01m4y47memr1hvqbat6x71sd64",
+   "timestamp": 1792012440020,
+   "event": "message",
+   "session": "default",
+   "metadata": {},
+   "me": {
+    "id": "4900000000001@c.us"
+   },
+   "payload": {
+    "id": "false_120363000000000001@g.us_ACEE8A86E3B0C34C16ADCD84DFD72F22_100000000000001@lid",
+    "timestamp": 1792012439,
+    "from": "120363000000000001@g.us",
+    "fromMe": false,
+    "source": "app",
+    "to": "100000000000001@lid",
+    "participant": "100000000000001@lid",
+    "hasMedia": false,
+    "media": null,
+    "ack": 2,
+    "location": null,
+    "vCards": null,
+    "ackName": "DEVICE",
+    "replyTo": null
+   },
+   "engine": "GOWS"
+  }
+ },
+ {
+  "name": "album_item",
+  "body": {
+   "id": "evt_01m4y47n4zxc8dj9chtb0j4510",
+   "timestamp": 1792012440735,
+   "event": "message",
+   "session": "default",
+   "metadata": {},
+   "me": {
+    "id": "4900000000001@c.us"
+   },
+   "payload": {
+    "id": "false_120363000000000001@g.us_AC756C250DEDBBBEE45DD600F1442147_100000000000001@lid",
+    "timestamp": 1792012440,
+    "from": "120363000000000001@g.us",
+    "fromMe": false,
+    "source": "app",
+    "to": "100000000000001@lid",
+    "participant": "100000000000001@lid",
+    "hasMedia": true,
+    "media": {
+     "url": "http://waha:3000/api/files/default/AC756C250DEDBBBEE45DD600F1442147.jpeg",
+     "mimetype": "image/jpeg"
+    },
+    "ack": 2,
+    "location": null,
+    "vCards": null,
+    "ackName": "DEVICE",
+    "replyTo": null
+   },
+   "engine": "GOWS"
+  }
+ },
+ {
+  "name": "video",
+  "body": {
+   "id": "evt_01m4y499jhphb7q1vhpabt06h9",
+   "timestamp": 1792012494418,
+   "event": "message",
+   "session": "default",
+   "metadata": {},
+   "me": {
+    "id": "4900000000001@c.us"
+   },
+   "payload": {
+    "id": "false_120363000000000001@g.us_AC55FE01D3AC05725F89AFC421E57412_100000000000001@lid",
+    "timestamp": 1792012493,
+    "from": "120363000000000001@g.us",
+    "fromMe": false,
+    "source": "app",
+    "to": "100000000000001@lid",
+    "participant": "100000000000001@lid",
+    "hasMedia": true,
+    "media": {
+     "url": "http://waha:3000/api/files/default/AC55FE01D3AC05725F89AFC421E57412.mp4",
+     "mimetype": "video/mp4"
+    },
+    "ack": 2,
+    "location": null,
+    "vCards": null,
+    "ackName": "DEVICE",
+    "replyTo": null
+   },
+   "engine": "GOWS"
+  }
+ },
+ {
+  "name": "image_with_caption",
+  "body": {
+   "id": "evt_01m4y4anj1300gpqsk33a26zrt",
+   "timestamp": 1792012539457,
+   "event": "message",
+   "session": "default",
+   "metadata": {},
+   "me": {
+    "id": "4900000000001@c.us"
+   },
+   "payload": {
+    "id": "false_120363000000000001@g.us_ACBF62B365EBE20AAADA843F1EAD3BEC_100000000000001@lid",
+    "timestamp": 1792012539,
+    "from": "120363000000000001@g.us",
+    "fromMe": false,
+    "source": "app",
+    "body": "<caption>",
+    "to": "100000000000001@lid",
+    "participant": "100000000000001@lid",
+    "hasMedia": true,
+    "media": {
+     "url": "http://waha:3000/api/files/default/ACBF62B365EBE20AAADA843F1EAD3BEC.jpeg",
+     "mimetype": "image/jpeg"
+    },
+    "ack": 2,
+    "location": null,
+    "vCards": null,
+    "ackName": "DEVICE",
+    "replyTo": null
+   },
+   "engine": "GOWS"
+  }
+ },
+ {
+  "name": "text",
+  "body": {
+   "id": "evt_01m4y4b1wv3133myt2nyzrjvy3",
+   "timestamp": 1792012552091,
+   "event": "message",
+   "session": "default",
+   "metadata": {},
+   "me": {
+    "id": "4900000000001@c.us"
+   },
+   "payload": {
+    "id": "false_120363000000000001@g.us_AC90A180304FABE1E1E851565A7D31AC_100000000000001@lid",
+    "timestamp": 1792012551,
+    "from": "120363000000000001@g.us",
+    "fromMe": false,
+    "source": "app",
+    "body": "<text>",
+    "to": "100000000000001@lid",
+    "participant": "100000000000001@lid",
+    "hasMedia": false,
+    "media": null,
+    "ack": 2,
+    "location": null,
+    "vCards": null,
+    "ackName": "DEVICE",
+    "replyTo": null
+   },
+   "engine": "GOWS"
+  }
+ },
+ {
+  "name": "image_reacted",
+  "body": {
+   "id": "evt_01m4y4bkef01b5f60x3m5yz8hs",
+   "timestamp": 1792012570063,
+   "event": "message",
+   "session": "default",
+   "metadata": {},
+   "me": {
+    "id": "4900000000001@c.us"
+   },
+   "payload": {
+    "id": "false_120363000000000001@g.us_AC85F5C07F46367E265D66F179462904_100000000000001@lid",
+    "timestamp": 1792012569,
+    "from": "120363000000000001@g.us",
+    "fromMe": false,
+    "source": "app",
+    "to": "100000000000001@lid",
+    "participant": "100000000000001@lid",
+    "hasMedia": true,
+    "media": {
+     "url": "http://waha:3000/api/files/default/AC85F5C07F46367E265D66F179462904.jpeg",
+     "mimetype": "image/jpeg"
+    },
+    "ack": 2,
+    "location": null,
+    "vCards": null,
+    "ackName": "DEVICE",
+    "replyTo": null
+   },
+   "engine": "GOWS"
+  }
+ },
+ {
+  "name": "reaction_camera",
+  "body": {
+   "id": "evt_01m4y4btezhhcv2cf69s47cckd",
+   "timestamp": 1792012577247,
+   "event": "message.reaction",
+   "session": "default",
+   "metadata": {},
+   "me": {
+    "id": "4900000000001@c.us"
+   },
+   "payload": {
+    "id": "false_120363000000000001@g.us_ACE132F2FEB507C55768243C2DAB2683_100000000000001@lid",
+    "timestamp": 1792012576,
+    "from": "120363000000000001@g.us",
+    "fromMe": false,
+    "source": "app",
+    "to": "100000000000001@lid",
+    "participant": "100000000000001@lid",
+    "reaction": {
+     "text": "📸",
+     "messageId": "true_120363000000000001@g.us_AC85F5C07F46367E265D66F179462904_4900000000001@c.us"
+    }
+   },
+   "engine": "GOWS"
+  }
+ },
+ {
+  "name": "image_revoked",
+  "body": {
+   "id": "evt_01m4y4ckx26c8hqmre0xwmgnr6",
+   "timestamp": 1792012603298,
+   "event": "message",
+   "session": "default",
+   "metadata": {},
+   "me": {
+    "id": "4900000000001@c.us"
+   },
+   "payload": {
+    "id": "false_120363000000000001@g.us_ACDC17E7561F106AB4A2EE23EABCEEFB_100000000000001@lid",
+    "timestamp": 1792012602,
+    "from": "120363000000000001@g.us",
+    "fromMe": false,
+    "source": "app",
+    "to": "100000000000001@lid",
+    "participant": "100000000000001@lid",
+    "hasMedia": true,
+    "media": {
+     "url": "http://waha:3000/api/files/default/ACDC17E7561F106AB4A2EE23EABCEEFB.jpeg",
+     "mimetype": "image/jpeg"
+    },
+    "ack": 2,
+    "location": null,
+    "vCards": null,
+    "ackName": "DEVICE",
+    "replyTo": null
+   },
+   "engine": "GOWS"
+  }
+ },
+ {
+  "name": "reaction_cross",
+  "body": {
+   "id": "evt_01m4y4cxw02wtr9bzkpqczzzha",
+   "timestamp": 1792012613504,
+   "event": "message.reaction",
+   "session": "default",
+   "metadata": {},
+   "me": {
+    "id": "4900000000001@c.us"
+   },
+   "payload": {
+    "id": "false_120363000000000001@g.us_AC4998F75CD334613D0BB0E4B93542C5_100000000000001@lid",
+    "timestamp": 1792012613,
+    "from": "120363000000000001@g.us",
+    "fromMe": false,
+    "source": "app",
+    "to": "100000000000001@lid",
+    "participant": "100000000000001@lid",
+    "reaction": {
+     "text": "❌",
+     "messageId": "true_120363000000000001@g.us_ACDC17E7561F106AB4A2EE23EABCEEFB_4900000000001@c.us"
+    }
+   },
+   "engine": "GOWS"
+  }
+ },
+ {
+  "name": "reaction_removed",
+  "body": {
+   "id": "evt_01m4y4dcs52p779pb9bz2ww9w3",
+   "timestamp": 1792012628773,
+   "event": "message.reaction",
+   "session": "default",
+   "metadata": {},
+   "me": {
+    "id": "4900000000001@c.us"
+   },
+   "payload": {
+    "id": "false_120363000000000001@g.us_ACAA36B5F32B06D30B86875C4E57786D_100000000000001@lid",
+    "timestamp": 1792012628,
+    "from": "120363000000000001@g.us",
+    "fromMe": false,
+    "source": "app",
+    "to": "100000000000001@lid",
+    "participant": "100000000000001@lid",
+    "reaction": {
+     "text": "",
+     "messageId": "true_120363000000000001@g.us_ACDC17E7561F106AB4A2EE23EABCEEFB_4900000000001@c.us"
+    }
+   },
+   "engine": "GOWS"
+  }
+ },
+ {
+  "name": "revoked",
+  "body": {
+   "id": "evt_01m4y4dy9qk6dmbnswtxbv86q6",
+   "timestamp": 1792012646712,
+   "event": "message.revoked",
+   "session": "default",
+   "metadata": {},
+   "me": {
+    "id": "4900000000001@c.us"
+   },
+   "payload": {
+    "after": {
+     "id": "false_120363000000000001@g.us_AC37144704DE36804EC7F7773B099717_100000000000001@lid",
+     "timestamp": 1792012646,
+     "from": "120363000000000001@g.us",
+     "fromMe": false,
+     "source": "app",
+     "to": "100000000000001@lid",
+     "participant": "100000000000001@lid",
+     "hasMedia": false,
+     "media": null,
+     "ack": 2,
+     "location": null,
+     "vCards": null,
+     "ackName": "DEVICE",
+     "replyTo": null
+    },
+    "before": null,
+    "revokedMessageId": "ACDC17E7561F106AB4A2EE23EABCEEFB"
+   },
+   "engine": "GOWS"
+  }
+ }
+]

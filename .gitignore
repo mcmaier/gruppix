@@ -1,0 +1,17 @@
+# Secrets and runtime data (never commit)
+.env
+data/
+import/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

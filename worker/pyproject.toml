@@ -1,0 +1,9 @@
+[project]
+name = "gruppix"
+version = "0.2.0"
+description = "Event photos from a WhatsApp group into a Nextcloud gallery"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

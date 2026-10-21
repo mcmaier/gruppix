@@ -1,0 +1,32 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: worker/requirements*.txt
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Lint (undefined names, unused imports)
+        run: pyflakes gruppix tests
+      - name: Tests
+        run: pytest -q
+      - name: Compose file is valid
+        working-directory: .
+        run: |
+          printf 'ARCHIVE_PATH=/tmp/archive\nSENDER_SALT=x\nWAHA_API_KEY=x\nHOOK_HMAC_KEY=x\nWAHA_DASHBOARD_PASSWORD=x\n' > .env
+          docker compose config --quiet

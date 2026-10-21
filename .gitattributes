@@ -1,0 +1,5 @@
+# Everything runs on the Synology (Linux): keep LF line endings even when
+# the repo is checked out on Windows. CRLF in .env would break values.
+* text=auto eol=lf
+*.jpg binary
+*.png binary
