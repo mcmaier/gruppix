@@ -29,10 +29,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from . import jobs
+from . import jobs, media
 from .config import Config
 from .db import Database, State
-from .pipeline import Pipeline
+from .pipeline import SIMILAR_MAX_BITS, Pipeline
 from .review import SOURCE_LABEL, STYLE, german_day, thumbnail_jpeg
 from .sinks import LocalSink
 
@@ -104,6 +104,141 @@ class DuplicateScan:
         return int(elapsed / self.done * (self.total - self.done))
 
 
+@dataclass(frozen=True)
+class Task:
+    """One portal action: release a quarantined item, or decide one duplicate pair."""
+
+    kind: str          # release | drop | keep
+    media_id: str      # the quarantined item, or the copy that would be removed
+    keep_id: str = ""  # duplicates: the copy that stays
+    target: str = ""   # release: "" automatic, "general", or "event:<event_key>"
+
+
+_RESULTS = {
+    "released": "{} in die Galerie übernommen",
+    "placed": "{} in den gewählten Terminordner übernommen",
+    "general": "{} in den Jahres-Sammelordner übernommen",
+    "inbox": "{} ohne Termin nach Fotos-Eingang („… Markiert“) – bitte in der Nextcloud in den passenden "
+             "Terminordner verschieben",
+    "removed": "{} Kopien gelöscht",
+    "kept": "{} Paare als verschieden gemerkt",
+    "skipped": "{} übersprungen (inzwischen geändert)",
+    "failed": "{} fehlgeschlagen – siehe Protokoll",
+}
+
+
+class ActionQueue:
+    """Portal actions run one by one in a background thread, so a click returns at once.
+
+    Each task takes the pipeline lock on its own; while another job holds it
+    (a long photographer import) the queue waits and retries instead of
+    failing. In memory only: after a restart the items are simply unchanged.
+    """
+
+    def __init__(self, apply: Callable[[Task], str], busy_label: Callable[[], str]) -> None:
+        self._apply = apply
+        self._busy_label = busy_label
+        self._cond = threading.Condition()
+        self._pending: deque[Task] = deque()
+        self._thread: threading.Thread | None = None
+        self.current: Task | None = None
+        self.waiting_for: str | None = None
+        self.done = 0
+        self.total = 0
+        self.results: Counter[str] = Counter()
+        self.finished_at: float | None = None
+        self.retry_delay = 5.0
+        self.show_result_for = 600.0  # seconds the summary of the last batch stays on the pages
+
+    def submit(self, tasks: list[Task]) -> int:
+        """Queue new tasks; items already queued are ignored (double clicks). Returns the count added."""
+        with self._cond:
+            queued = {t.media_id for t in self._pending} | ({self.current.media_id} if self.current else set())
+            new = []
+            for task in tasks:
+                if task.media_id not in queued:
+                    queued.add(task.media_id)
+                    new.append(task)
+            if not new:
+                return 0
+            if not self._pending and self.current is None:  # a new batch
+                self.done, self.total, self.results, self.finished_at = 0, 0, Counter(), None
+            self._pending.extend(new)
+            self.total += len(new)
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run, name="admin-actions", daemon=True)
+                self._thread.start()
+            self._cond.notify()
+        return len(new)
+
+    def queued_ids(self) -> set[str]:
+        with self._cond:
+            ids = {t.media_id for t in self._pending} | {t.keep_id for t in self._pending if t.keep_id}
+            if self.current:
+                ids |= {self.current.media_id, self.current.keep_id} - {""}
+            return ids
+
+    @property
+    def active(self) -> bool:
+        with self._cond:
+            return bool(self._pending) or self.current is not None
+
+    def status(self) -> dict[str, Any]:
+        with self._cond:
+            active = bool(self._pending) or self.current is not None
+            recent = (self.finished_at is not None
+                      and time.monotonic() - self.finished_at < self.show_result_for)
+            return {
+                "active": active,
+                "done": self.done,
+                "total": self.total,
+                "waiting_for": self.waiting_for if active else None,
+                "summary": summary(self.results) if (active or recent) and self.results else "",
+            }
+
+    def join(self, timeout: float = 30) -> bool:
+        """Wait until the queue is empty (tests)."""
+        end = time.monotonic() + timeout
+        while self.active:
+            if time.monotonic() > end:
+                return False
+            time.sleep(0.02)
+        return True
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                while not self._pending:
+                    self._cond.wait()
+                self.current = self._pending.popleft()
+            outcome = self._execute(self.current)
+            with self._cond:
+                self.results[outcome] += 1
+                self.done += 1
+                self.current = None
+                if not self._pending:
+                    self.finished_at = time.monotonic()
+                    log.info("admin actions done: %s", dict(self.results))
+
+    def _execute(self, task: Task) -> str:
+        while True:
+            try:
+                outcome = self._apply(task)  # takes the pipeline lock, raises Busy
+                self.waiting_for = None
+                return outcome
+            except jobs.Busy:
+                self.waiting_for = self._busy_label()
+                time.sleep(self.retry_delay)
+            except Exception:  # noqa: BLE001 - one broken item must not stop the queue
+                log.exception("admin action %s failed", task)
+                self.waiting_for = None
+                return "failed"
+
+
+def summary(results: Counter[str]) -> str:
+    return ", ".join(text.format(results[key]) for key, text in _RESULTS.items() if results[key])
+
+
 @dataclass
 class Response:
     code: int
@@ -120,6 +255,7 @@ class AdminPortal:
         self.fail_delay = 1.0  # seconds after a wrong password (slows down guessing)
         self.scan = DuplicateScan()
         self._scan_lock = threading.Lock()
+        self.queue = ActionQueue(self.apply, self._busy_job)
 
     # --- request entry -----------------------------------------------------------
 
@@ -139,7 +275,7 @@ class AdminPortal:
         if method == "GET":
             pages: dict[str, Callable[[dict[str, list[str]]], Response]] = {
                 "/": self.overview, "/quarantine": self.quarantine,
-                "/duplicates": self.duplicates, "/thumb": self.thumb,
+                "/duplicates": self.duplicates, "/thumb": self.thumb, "/queue": self.queue_status,
             }
             page = pages.get(route)
             return page(query) if page else self._page("Nicht gefunden", "<p>Diese Seite gibt es nicht.</p>", code=404)
@@ -232,28 +368,26 @@ class AdminPortal:
             rows = [r for r in self._pipeline(db).quarantined() if r["staged_path"]]
         finally:
             db.close()
-        flash = _flash(query, {
-            "released": "{} in die Galerie übernommen.",
-            "skipped": "{} waren nicht mehr in der Quarantäne (z. B. inzwischen gelöscht).",
-            "failed": "{} konnten nicht verarbeitet werden – siehe Protokoll.",
-        })
+        flash = _flash(query)
+        queued = self.queue.queued_ids()
         if not rows:
             return self._page("Quarantäne", flash + "<p>Die Quarantäne ist leer.</p>")
         days: dict[str, list[str]] = {}
         for row in rows:
             sent = datetime.fromtimestamp(row["msg_ts"], self.cfg.tz)
-            if row["state"] == State.HELD:
-                note = "zurückgehalten: " + (row["pending_dir"] or "").rsplit("/", 1)[-1]
+            if row["state"] == State.HELD or row["pending_dir"]:
+                note = "→ " + (row["pending_dir"] or "").rsplit("/", 1)[-1]
             else:
                 purge = datetime.fromtimestamp(row["updated_at"], self.cfg.tz) + timedelta(days=self.cfg.quarantine_days)
-                note = f"wird gelöscht am {purge:%d.%m.}"
+                note = f"ohne Termin → Fotos-Eingang · wird gelöscht am {purge:%d.%m.}"
             source = SOURCE_LABEL.get(row["source"], row["source"])
             days.setdefault(german_day(f"{sent:%A, %d.%m.%Y}"), []).append(
-                f'<label class="tile card">{self._img(row["id"], row["kind"], "s")}'
+                f'<label class="tile card{" queued" if row["id"] in queued else ""}">{self._img(row["id"], row["kind"], "s")}'
                 f'<span class="cap"><b>{sent:%H:%M}</b> · {_e(source)} · Absender {_e(row["sender_hash"][:6])}'
                 f'<br>{_e(note)}</span>'
-                f'<span class="tick"><input type="checkbox" name="id" value="{_e(row["id"])}"> In die Galerie</span>'
-                f'</label>'
+                + ('<span class="tick muted">wird übernommen …</span></label>' if row["id"] in queued else
+                   f'<span class="tick"><input type="checkbox" name="id" value="{_e(row["id"])}"> In die Galerie</span>'
+                   f'</label>')
             )
         groups = "".join(
             f'<section class="day"><h2>{_e(day)} <button type="button" class="link all">alle</button></h2>'
@@ -261,23 +395,33 @@ class AdminPortal:
             for day, tiles in days.items()
         )
         lead = (
-            f'<p class="lead">{len(rows)} Bilder und Videos ohne passenden Termin oder mit zu wenigen Bildern '
-            "für ihren Termin. Angehakte kommen wie bei 📸 in die Galerie: zurückgehaltene in ihren "
-            "Terminordner, die übrigen nach Fotos-Eingang (Ordner „Markiert“). Alles andere wird nach "
+            f'<p class="lead">{len(rows)} {"Eintrag" if len(rows) == 1 else "Einträge"} ohne passenden Termin oder mit zu wenigen Bildern '
+            "für ihren Termin. Ankreuzen, unten das <b>Ziel</b> wählen, übernehmen. „Automatisch“ wirkt wie 📸: "
+            "Bilder mit Termin (→ Ordnername) in ihren Terminordner, Bilder <b>ohne Termin nach Fotos-Eingang</b> "
+            "(dort von Hand einsortieren). Besser gleich einen <b>Terminordner</b> wählen oder für schöne Einzelbilder "
+            f"den Jahres-Sammelordner „{_e(self.cfg.general_folder)}“. Alles andere wird nach "
             f"{self.cfg.quarantine_days} Tagen gelöscht. Gleicher Absender-Code = gleiche Person.</p>"
         )
+        events = "".join(
+            f'<option value="event:{_e(key)}">{datetime.fromtimestamp(row["start_ts"], self.cfg.tz):%d.%m.%Y} · '
+            f'{_e(row["title"])}</option>'
+            for key, row in self._event_choices().items()
+        )
+        target = (
+            '<label class="target"><span class="muted">Ziel</span> <select name="target" form="f">'
+            '<option value="auto" selected>Automatisch – Terminordner, sonst Fotos-Eingang</option>'
+            f'<option value="general">Jahres-Sammelordner „{_e(self.cfg.general_folder)}“</option>'
+            + (f'<optgroup label="Terminordner">{events}</optgroup>' if events else "")
+            + "</select></label>"
+        )
         bar = ('<div class="bar"><div><span id="sum" class="grow muted">Nichts ausgewählt</span>'
-               '<button type="submit" form="f" id="go">In die Galerie übernehmen</button></div></div>')
+               + target + '<button type="submit" form="f" id="go">In die Galerie übernehmen</button></div></div>')
         body = flash + lead + f'<form id="f" method="post" action="/quarantine">{groups}</form>'
         return self._page("Quarantäne", body, bar=bar, script=_QUARANTINE_JS)
 
     def duplicates(self, query: dict[str, list[str]]) -> Response:
         scan = self.scan
-        flash = _flash(query, {
-            "removed": "{} Kopien aus der Nextcloud gelöscht (Originale bleiben im Archiv).",
-            "kept": "{} Paare als verschiedene Bilder gemerkt, sie werden nicht mehr angezeigt.",
-            "stale": "{} Paare hatten sich inzwischen geändert und wurden übersprungen.",
-        })
+        flash = _flash(query)
         start = ('<form method="post" action="/duplicates/scan" class="inline">'
                  '<button type="submit">{}</button></form>')
         if scan.running:
@@ -302,7 +446,8 @@ class AdminPortal:
                   f'<span class="muted">(Dauer {_duration(took)})</span></p>'
                   + (f'<p class="err">Fehler: {_e(scan.error)}</p>' if scan.error else "")
                   + start.format("Erneut prüfen") + "</div>")
-        pairs = self._open_pairs(scan.pairs)
+        queued = self.queue.queued_ids()
+        pairs = [p for p in self._open_pairs(scan.pairs) if p[0]["id"] not in queued and p[1]["id"] not in queued]
         if not pairs:
             return self._page("Duplikate", flash + status + "<p>Keine doppelten Bilder (mehr) offen.</p>")
         cards = []
@@ -312,18 +457,20 @@ class AdminPortal:
                 f'<section class="card pairbox"><header><span class="n">{n}</span>'
                 f'<span class="grow">{_e(folder)}</span>'
                 f'<span class="muted" title="Unterschied im Bildvergleich, 0 = gleich">{distance} von 64 Bit</span></header>'
-                f'<div class="pair">{self._figure(keep, "keep", "Bleibt")}{self._figure(extra, "drop", "Kopie")}</div>'
+                f'<div class="pair">{self._figure(keep, "big", "Größer")}{self._figure(extra, "small", "Kleiner")}</div>'
                 f'<input type="hidden" name="k{n}" value="{_e(keep["id"])}">'
                 f'<input type="hidden" name="e{n}" value="{_e(extra["id"])}">'
                 f'<fieldset class="choice">'
-                f'<label><input type="radio" name="a{n}" value="drop" checked> Kopie löschen</label>'
+                f'<label><input type="radio" name="a{n}" value="drop" checked> Rechts (kleiner) löschen</label>'
+                f'<label><input type="radio" name="a{n}" value="swap"> Links (größer) löschen</label>'
                 f'<label><input type="radio" name="a{n}" value="keep"> Kein Duplikat – beide behalten</label>'
                 f'<label><input type="radio" name="a{n}" value="skip"> Später entscheiden</label>'
                 f'</fieldset></section>'
             )
         lead = (
-            f'<p class="lead">{len(pairs)} Paare. Links die Datei, die bleibt (die größere), rechts die Kopie. '
-            "„Kopie löschen“ entfernt sie aus der Nextcloud; beide Originale bleiben im Archiv. "
+            f'<p class="lead">{len(pairs)} Paare, links jeweils die größere Datei. Vorgeschlagen ist, die kleinere '
+            "zu löschen; soll absichtlich die kleinere bleiben (z. B. besserer Ausschnitt), „Links löschen“ wählen. "
+            "Gelöscht wird nur die Kopie in der Nextcloud – <b>beide Originale bleiben im Archiv</b>. "
             "„Beide behalten“ merkt sich das Paar, es erscheint nicht wieder.</p>"
         )
         bar = ('<div class="bar"><div><span id="sum" class="grow muted"></span>'
@@ -417,69 +564,90 @@ class AdminPortal:
 
     def release(self, form: dict[str, list[str]], client: str) -> Response:
         ids = list(dict.fromkeys(form.get("id", [])))
-        if not ids:
-            return _redirect("/quarantine")
-        if self.service.nextcloud is None:
+        if ids and self.service.nextcloud is None:
             return _redirect("/quarantine", nonc=1)
-        results: Counter[str] = Counter()
+        target = (form.get("target") or ["auto"])[0]
+        if target == "auto":
+            target = ""
+        elif target != "general" and target.removeprefix("event:") not in self._event_choices():
+            return _redirect("/quarantine")  # unknown or forged target: change nothing
+        added = self.queue.submit([Task("release", media_id, target=target) for media_id in ids])
+        log.info("admin (%s): %d items queued for the gallery (%s)", client, added, target or "automatic")
+        return _redirect("/quarantine")
+
+    def _event_choices(self) -> dict[str, Any]:
+        """Event folders offered as target, newest first: key -> events row."""
+        db = Database(self.cfg.db_path)
         try:
-            with jobs.pipeline_lock(self.cfg):
-                db = Database(self.cfg.db_path)
-                try:
-                    pipeline = self._pipeline(db, gallery=True)
-                    for media_id in ids:
-                        try:
-                            row = db.get(media_id)
-                        except KeyError:
-                            results["skipped"] += 1
-                            continue
-                        if row["state"] not in (State.QUARANTINED, State.HELD):
-                            results["skipped"] += 1
-                            continue
-                        state = pipeline.pin(media_id)
-                        results["released" if state in (*State.PUBLISHED, State.REJECTED) else "failed"] += 1
-                finally:
-                    db.close()
-        except jobs.Busy:
-            return _redirect("/quarantine", busy=self._busy_job())
-        log.info("admin (%s): quarantine release %s", client, dict(results))
-        return _redirect("/quarantine", **results)
+            return {row["event_key"]: row for row in db.recent_events()}
+        finally:
+            db.close()
 
     def resolve_duplicates(self, form: dict[str, list[str]], client: str) -> Response:
-        chosen: list[tuple[str, str, str]] = []
+        tasks = []
         for key, values in form.items():
-            if key.startswith("a") and key[1:].isdigit() and values[0] in ("drop", "keep"):
+            if key.startswith("a") and key[1:].isdigit() and values[0] in ("drop", "swap", "keep"):
                 n = key[1:]
                 keep, extra = (form.get(f"k{n}") or [""])[0], (form.get(f"e{n}") or [""])[0]
-                chosen.append((values[0], keep, extra))
-        if not chosen:
-            return _redirect("/duplicates")
-        if self.service.nextcloud is None:
+                if keep and extra:
+                    if values[0] == "swap":  # keep the smaller copy, remove the larger one
+                        tasks.append(Task("drop", keep, extra))
+                    else:
+                        tasks.append(Task(values[0], extra, keep))
+        if tasks and self.service.nextcloud is None:
             return _redirect("/duplicates", nonc=1)
-        results: Counter[str] = Counter()
-        try:
-            with jobs.pipeline_lock(self.cfg):
-                db = Database(self.cfg.db_path)
+        added = self.queue.submit(tasks)
+        log.info("admin (%s): %d duplicate decisions queued", client, added)
+        return _redirect("/duplicates")
+
+    def queue_status(self, query: dict[str, list[str]]) -> Response:
+        import json
+
+        return Response(200, json.dumps(self.queue.status(), ensure_ascii=False).encode(),
+                        "application/json; charset=utf-8", {"Cache-Control": "no-store"})
+
+    def apply(self, task: Task) -> str:
+        """Run one queued action under the pipeline lock (raises jobs.Busy while another job runs)."""
+        with jobs.pipeline_lock(self.cfg):
+            db = Database(self.cfg.db_path)
+            try:
+                pipeline = self._pipeline(db, gallery=True)
+                if task.kind == "release":
+                    try:
+                        row = db.get(task.media_id)
+                    except KeyError:
+                        return "skipped"
+                    if row["state"] not in (State.QUARANTINED, State.HELD):
+                        return "skipped"
+                    if task.target == "general":
+                        state, outcome = pipeline.place(task.media_id, pipeline.general_dir(task.media_id)), "general"
+                    elif task.target.startswith("event:"):
+                        event = db.event_info(task.target.removeprefix("event:"))
+                        if event is None:
+                            return "skipped"
+                        rel_dir = f"{datetime.fromtimestamp(event['start_ts'], self.cfg.tz):%Y}/{event['folder']}"
+                        state, outcome = pipeline.place(task.media_id, rel_dir, event["event_key"]), "placed"
+                    else:
+                        state = pipeline.pin(task.media_id)
+                        outcome = "inbox" if db.get(task.media_id)["target"] == "inbox" else "released"
+                    return outcome if state in (*State.PUBLISHED, State.REJECTED) else "failed"
+                # Duplicates: act only if both copies are still in the gallery and still look
+                # alike, so a stale or forged form changes nothing.
                 try:
-                    pipeline = self._pipeline(db, gallery=True)
-                    # Only act on pairs that are still reported: a stale or forged form changes nothing.
-                    current = {(k["id"], e["id"]) for k, e, _ in pipeline.similar_pairs()}
-                    for action, keep, extra in chosen:
-                        if (keep, extra) not in current:
-                            results["stale"] += 1
-                        elif action == "keep":
-                            db.add_distinct_pair(keep, extra)
-                            results["kept"] += 1
-                        elif pipeline.drop_duplicate(extra, keep) == State.DUPLICATE:
-                            results["removed"] += 1
-                        else:
-                            results["stale"] += 1
-                finally:
-                    db.close()
-        except jobs.Busy:
-            return _redirect("/duplicates", busy=self._busy_job())
-        log.info("admin (%s): duplicates %s", client, dict(results))
-        return _redirect("/duplicates", **results)
+                    keep, extra = db.get(task.keep_id), db.get(task.media_id)
+                except KeyError:
+                    return "skipped"
+                if (keep["state"] not in State.PUBLISHED or extra["state"] not in State.PUBLISHED
+                        or not keep["phash"] or not extra["phash"]
+                        or media.hash_distance(keep["phash"], extra["phash"]) > SIMILAR_MAX_BITS
+                        or tuple(sorted((keep["id"], extra["id"]))) in db.distinct_pairs()):
+                    return "skipped"
+                if task.kind == "keep":
+                    db.add_distinct_pair(keep["id"], extra["id"])
+                    return "kept"
+                return "removed" if pipeline.drop_duplicate(extra["id"], keep["id"]) == State.DUPLICATE else "skipped"
+            finally:
+                db.close()
 
     # --- helpers -------------------------------------------------------------------
 
@@ -488,6 +656,17 @@ class AdminPortal:
         if gallery and sink is None:
             raise RuntimeError("Nextcloud is not configured")
         return Pipeline(self.cfg, db, jobs.empty_calendar(self.cfg), sink or LocalSink(self.cfg.outbox_dir))
+
+    def _queue_banner(self) -> str:
+        """Progress of queued actions; the page script keeps it up to date."""
+        st = self.queue.status()
+        if st["active"]:
+            wait = f" · wartet auf „{_e(st['waiting_for'])}“" if st["waiting_for"] else ""
+            return (f'<div id="queue" class="card queue" data-active="1"><span class="spinner"></span> '
+                    f'<span id="queue-text">Aufträge werden ausgeführt: {st["done"]} von {st["total"]}{wait}</span></div>')
+        if st["summary"]:
+            return f'<div id="queue" class="flash" data-active="0"><span id="queue-text">Erledigt: {_e(st["summary"])}</span></div>'
+        return '<div id="queue" data-active="0" hidden><span id="queue-text"></span></div>'
 
     def _busy_job(self) -> str:
         running = self.service.running
@@ -499,12 +678,14 @@ class AdminPortal:
                 f'alt="" loading="lazy">{badge}</span>')
 
     def _figure(self, row, role: str, label: str) -> str:
+        """One copy of a pair; CSS shows "bleibt"/"wird gelöscht" from the chosen radio."""
         sent = datetime.fromtimestamp(row["msg_ts"], self.cfg.tz).strftime("%d.%m.%Y %H:%M")
         name = (row["remote_path"] or "").rsplit("/", 1)[-1]
         source = SOURCE_LABEL.get(row["source"], row["source"])
         size = f'{row["pixels"] / 1e6:.1f} MP · ' if row["pixels"] else ""
         return (f'<figure class="{role}">{self._img(row["id"], row["kind"], "l")}<figcaption>'
-                f'<b>{label}</b> · {size}{_e(source)} · gesendet {sent}<br><code>{_e(name)}</code></figcaption></figure>')
+                f'<b>{label}</b> <span class="fate stays">bleibt</span><span class="fate goes">wird gelöscht</span>'
+                f' · {size}{_e(source)} · gesendet {sent}<br><code>{_e(name)}</code></figcaption></figure>')
 
     def _page(self, title: str, body: str, *, code: int = 200, bar: str = "", script: str = "",
               refresh: int | None = None) -> Response:
@@ -513,20 +694,23 @@ class AdminPortal:
             f'<a href="{href}"{" class=on" if label == title else ""}>{label}</a>'
             for href, label in (("/", "Übersicht"), ("/quarantine", "Quarantäne"), ("/duplicates", "Duplikate"))
         )
+        script = _COMMON_JS + script
         page = (
             _PAGE.replace("{{style}}", STYLE + _EXTRA_STYLE)
+            .replace("{{queue}}", self._queue_banner())
             .replace("{{title}}", _e(title))
             .replace("{{club}}", _e(self.cfg.club_name))
             .replace("{{nav}}", nav)
             .replace("{{bar}}", bar)
-            .replace("{{script}}", f'<script nonce="{nonce}">{script}</script>' if script else "")
+            .replace("{{script}}", f'<script nonce="{nonce}">{script}</script>')
             .replace("{{refresh}}", f'<meta http-equiv="refresh" content="{refresh}">' if refresh else "")
             .replace("{{nonce}}", nonce)
             .replace("{{body}}", body)
         )
         return Response(code, page.encode(), headers={
             "Content-Security-Policy": (
-                f"default-src 'none'; img-src 'self'; style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'; "
+                f"default-src 'none'; img-src 'self'; connect-src 'self'; style-src 'nonce-{nonce}'; "
+                f"script-src 'nonce-{nonce}'; "
                 "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
             ),
             "Cache-Control": "no-store",
@@ -553,20 +737,11 @@ def _redirect(path: str, **params: Any) -> Response:
     return Response(303, b"", "text/plain", {"Location": path + (f"?{query}" if query else "")})
 
 
-def _flash(query: dict[str, list[str]], texts: dict[str, str]) -> str:
-    """Result message after an action; only fixed texts, numbers from the query."""
-    lines = []
+def _flash(query: dict[str, list[str]]) -> str:
     if query.get("nonc"):
-        lines.append('<p class="flash warn">Nextcloud ist nicht eingerichtet (NC_URL, NC_USER, NC_APP_PASSWORD) – '
-                     "es wurde nichts geändert.</p>")
-    if query.get("busy"):
-        lines.append(f'<p class="flash warn">Gerade läuft „{_e(query["busy"][0][:60])}“. '
-                     "Bitte in ein paar Minuten noch einmal versuchen – es wurde nichts geändert.</p>")
-    for key, text in texts.items():
-        value = (query.get(key) or [""])[0]
-        if value.isdigit() and int(value):
-            lines.append(f'<p class="flash">{_e(text.format(int(value)))}</p>')
-    return "".join(lines)
+        return ('<p class="flash warn">Nextcloud ist nicht eingerichtet (NC_URL, NC_USER, NC_APP_PASSWORD) – '
+                "es wurde nichts geändert.</p>")
+    return ""
 
 
 def _duration(seconds: int) -> str:
@@ -633,6 +808,7 @@ _PAGE = """<!doctype html>
 <style nonce="{{nonce}}">{{style}}</style></head>
 <body><header class="top"><div><b>gruppix</b><span class="muted">{{club}}</span><nav>{{nav}}</nav></div></header>
 <main><h1>{{title}}</h1>
+{{queue}}
 {{body}}
 </main>
 {{bar}}
@@ -667,7 +843,16 @@ button.link { background:none; border:0; color:var(--accent); cursor:pointer; fo
 .pairbox { margin:0 0 16px; }
 fieldset.choice { border:0; padding:0; margin:12px 0 0; display:flex; gap:18px; flex-wrap:wrap; }
 fieldset.choice label { display:inline-flex; gap:6px; align-items:center; cursor:pointer; }
-.pairbox:has(input[value=keep]:checked) figure.drop { border-color:var(--keep); }
+.pairbox figure.big, .pairbox figure.small { border-top:4px solid var(--keep); }
+.fate { font-size:12px; padding:1px 6px; border-radius:4px; margin-left:4px; display:none; }
+.fate.stays { background:var(--keep); color:#fff; } .fate.goes { background:var(--drop); color:#fff; }
+.pairbox:has(input[value=drop]:checked) figure.small { border-color:var(--drop); }
+.pairbox:has(input[value=swap]:checked) figure.big { border-color:var(--drop); }
+.pairbox:has(input[value=drop]:checked) figure.big .stays,
+.pairbox:has(input[value=drop]:checked) figure.small .goes,
+.pairbox:has(input[value=swap]:checked) figure.small .stays,
+.pairbox:has(input[value=swap]:checked) figure.big .goes,
+.pairbox:has(input[value=keep]:checked) .stays { display:inline; }
 .pairbox:has(input[value=skip]:checked) { opacity:.55; }
 .bar .grow { flex:1; }
 .scan { margin:0 0 16px; } .scan p { margin:0 0 10px; } .scan .err { color:var(--drop); }
@@ -679,6 +864,39 @@ form.inline button, .bar button { font:inherit; padding:8px 14px; border:0; bord
            border-radius:50%; animation:spin 1s linear infinite; vertical-align:-1px; }
 @keyframes spin { to { transform:rotate(360deg); } }
 .bar button:disabled { opacity:.5; cursor:default; }
+.queue { margin:0 0 16px; } #queue.flash { margin:0 0 16px; }
+.tile.queued { opacity:.55; cursor:default; }
+.bar .target { display:inline-flex; gap:6px; align-items:center; }
+@media (max-width:600px) { .bar #sum { flex-basis:100%; } }
+.bar select { font:inherit; padding:7px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg);
+              color:var(--text); max-width:min(420px, 70vw); }
+"""
+
+_COMMON_JS = """
+let dirty = false;
+document.querySelectorAll('input').forEach(i => i.addEventListener('change', () => { dirty = true; }));
+document.querySelectorAll('form').forEach(f => f.addEventListener('submit', () => {
+  // one click is enough: block a second submit while the page reloads
+  document.querySelectorAll('button[type=submit]').forEach(b => { b.disabled = true; b.textContent = 'Wird übertragen …'; });
+}));
+const banner = document.getElementById('queue');
+async function poll() {
+  try {
+    const st = await (await fetch('/queue', {cache: 'no-store'})).json();
+    const text = document.getElementById('queue-text');
+    if (st.active) {
+      text.textContent = 'Aufträge werden ausgeführt: ' + st.done + ' von ' + st.total +
+        (st.waiting_for ? ' · wartet auf „' + st.waiting_for + '“' : '');
+      setTimeout(poll, 2000);
+    } else if (!dirty) {
+      location.reload();
+    } else {
+      banner.className = 'flash';
+      text.textContent = 'Erledigt: ' + st.summary + ' – Seite neu laden, um den aktuellen Stand zu sehen.';
+    }
+  } catch (e) { setTimeout(poll, 5000); }
+}
+if (banner && banner.dataset.active === '1') setTimeout(poll, 2000);
 """
 
 _QUARANTINE_JS = """
@@ -703,9 +921,9 @@ _DUPLICATES_JS = """
 const radios = [...document.querySelectorAll('fieldset.choice input')];
 const sum = document.getElementById('sum');
 function update() {
-  const c = {drop: 0, keep: 0, skip: 0};
+  const c = {drop: 0, swap: 0, keep: 0, skip: 0};
   radios.filter(r => r.checked).forEach(r => c[r.value]++);
-  sum.textContent = c.drop + ' löschen · ' + c.keep + ' beide behalten · ' + c.skip + ' später';
+  sum.textContent = (c.drop + c.swap) + ' löschen · ' + c.keep + ' beide behalten · ' + c.skip + ' später';
 }
 radios.forEach(r => r.addEventListener('change', update));
 update();

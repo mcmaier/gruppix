@@ -263,6 +263,12 @@ class Database:
     def event_info(self, event_key: str) -> sqlite3.Row | None:
         return self._conn.execute("SELECT * FROM events WHERE event_key = ?", (event_key,)).fetchone()
 
+    def recent_events(self, limit: int = 60) -> list[sqlite3.Row]:
+        """Events that already have a gallery folder, newest first (admin portal)."""
+        return self._conn.execute(
+            "SELECT * FROM events ORDER BY start_ts DESC LIMIT ?", (limit,)
+        ).fetchall()
+
     def event_gallery_dir(self, event_key: str) -> str | None:
         row = self._conn.execute(
             "SELECT pending_dir FROM media WHERE event_key = ? AND target = 'gallery' "

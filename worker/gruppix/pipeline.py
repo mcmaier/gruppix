@@ -493,6 +493,23 @@ class Pipeline:
         day = (datetime.fromtimestamp(row["ts"], self._cfg.tz) - timedelta(hours=self._cfg.day_cutoff_hour)).date()
         return self._publish(media_id, f"{day:%Y}/{day:%Y-%m-%d} Markiert", target="inbox")
 
+    def place(self, media_id: str, rel_dir: str, event_key: str | None = None) -> str:
+        """Admin choice (portal): put a quarantined or held item into a given gallery folder,
+        e.g. an event folder or the yearly collection. Returns the new state."""
+        row = self._db.get(media_id)
+        self._db.update(media_id, pinned=1)
+        if row["state"] not in (State.HELD, State.QUARANTINED) or not row["staged_path"]:
+            return row["state"]
+        if event_key:
+            self._db.update(media_id, event_key=event_key, pending_dir=rel_dir)
+        return self._publish(media_id, rel_dir, target="gallery", event_key=event_key)
+
+    def general_dir(self, media_id: str) -> str:
+        """Yearly collection folder for an item (year of its photo day)."""
+        row = self._db.get(media_id)
+        day = (datetime.fromtimestamp(row["ts"], self._cfg.tz) - timedelta(hours=self._cfg.day_cutoff_hour)).date()
+        return f"{day:%Y}/{day:%Y} {sanitize(self._cfg.general_folder)}"
+
     def remove(self, media_id: str) -> str:
         """Delete an item everywhere (❌ reaction, "delete for everyone"):
         gallery copy, archived original, staged and outbox files."""

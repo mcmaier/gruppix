@@ -1,6 +1,7 @@
 """Admin portal: login, CSRF check, pages, actions."""
 
 import base64
+import json
 import threading
 import urllib.request
 from dataclasses import replace
@@ -74,11 +75,15 @@ def test_quarantine_page_thumbnail_and_release(portal, db, make_pipeline, tmp_pa
     assert portal.dispatch("GET", "/thumb?id=waha%3Anope", AUTH).code == 404
 
     answer = portal.dispatch("POST", "/quarantine", POST, _form(id=["waha:Q1", "waha:gone"]))
-    assert answer.code == 303 and answer.headers["Location"] == "/quarantine?released=1&skipped=1"
+    assert answer.code == 303 and answer.headers["Location"] == "/quarantine"     # returns at once
+    assert portal.queue.join()
     assert db.get("waha:Q1")["state"] == State.UPLOADED and db.get("waha:Q0")["state"] == State.QUARANTINED
     assert len(published(gallery)) == 1
-    shown = portal.dispatch("GET", answer.headers["Location"], AUTH).body.decode()
-    assert "1 in die Galerie übernommen." in shown and shown.count('name="id"') == 1
+    shown = portal.dispatch("GET", "/quarantine", AUTH).body.decode()
+    assert "Erledigt: 1 ohne Termin nach Fotos-Eingang" in shown and "1 übersprungen" in shown
+    assert shown.count('name="id"') == 1 and "ohne Termin → Fotos-Eingang" in shown
+    status = json.loads(portal.dispatch("GET", "/queue", AUTH).body)
+    assert status["active"] is False and status["done"] == status["total"] == 2
 
 
 def test_duplicates_delete_keep_and_forged(portal, db, make_pipeline, tmp_path, gallery):
@@ -88,15 +93,27 @@ def test_duplicates_delete_keep_and_forged(portal, db, make_pipeline, tmp_path, 
     assert "Prüfung starten" in portal.dispatch("GET", "/duplicates", AUTH).body.decode()
     _scan(portal)
     page = portal.dispatch("GET", "/duplicates", AUTH).body.decode()
-    assert page.count('type="radio"') == 6 and "Erneut prüfen" in page
+    assert page.count('type="radio"') == 8 and "Erneut prüfen" in page
 
     form = _form(a1="drop", k1=hd1, e1=sd1, a2="keep", k2=hd2, e2=sd2,
                  a3="drop", k3=hd2, e3=hd1)                       # pair 3 is forged
     answer = portal.dispatch("POST", "/duplicates", POST, form)
-    assert answer.headers["Location"] == "/duplicates?removed=1&kept=1&stale=1"
+    assert answer.headers["Location"] == "/duplicates" and portal.queue.join()
+    assert portal.queue.status()["summary"] == "1 Kopien gelöscht, 1 Paare als verschieden gemerkt, 1 übersprungen (inzwischen geändert)"
     assert db.get(sd1)["state"] == State.DUPLICATE and db.get(sd2)["state"] == State.UPLOADED
     assert db.get(hd1)["state"] == State.UPLOADED
     assert "Keine doppelten Bilder (mehr) offen" in portal.dispatch("GET", "/duplicates", AUTH).body.decode()
+
+
+def test_duplicates_keep_the_smaller_copy(portal, db, make_pipeline, tmp_path, gallery):
+    pipe = make_pipeline(X)
+    hd, sd = _two_copies(pipe, db, tmp_path, 9, 1)
+    _scan(portal)
+    portal.dispatch("POST", "/duplicates", POST, _form(a1="swap", k1=hd, e1=sd))
+    assert portal.queue.join()
+    assert db.get(hd)["state"] == State.DUPLICATE and db.get(sd)["state"] == State.UPLOADED
+    assert db.get(hd)["archive_path"]                        # the original stays in the archive
+    assert len(published(gallery)) == 1
 
 
 def _scan(portal):
@@ -128,15 +145,23 @@ def test_scan_fingerprints_old_images_and_shows_progress(portal, db, make_pipeli
     assert "Duplikate (letzte Prüfung)" in portal.dispatch("GET", "/", AUTH).body.decode()
 
 
-def test_busy_lock_changes_nothing(portal, db, make_pipeline, tmp_path):
+def test_queue_waits_for_a_running_job_and_ignores_double_clicks(portal, db, make_pipeline, tmp_path):
+    import time
+
     pipe = make_pipeline(X)
     pipe.ingest(_item("waha", "Q9", at(2026, 7, 20, 12), _photo(tmp_path, "q9.jpg", 30)))
     portal.service.running = ("import-drop", at(2026, 10, 21, 10))
-    with jobs.pipeline_lock(portal.cfg):
-        answer = portal.dispatch("POST", "/quarantine", POST, _form(id="waha:Q9"))
-    assert "busy=Fotografen-Uploads" in answer.headers["Location"]
-    assert db.get("waha:Q9")["state"] == State.QUARANTINED
-    assert "Gerade läuft" in portal.dispatch("GET", answer.headers["Location"], AUTH).body.decode()
+    portal.queue.retry_delay = 0.05
+    with jobs.pipeline_lock(portal.cfg):                       # a long import holds the lock
+        assert portal.dispatch("POST", "/quarantine", POST, _form(id="waha:Q9")).code == 303
+        assert portal.queue.submit([admin.Task("release", "waha:Q9")]) == 0     # second click
+        time.sleep(0.3)
+        assert db.get("waha:Q9")["state"] == State.QUARANTINED
+        page = portal.dispatch("GET", "/quarantine", AUTH).body.decode()
+        assert "wartet auf „Fotografen-Uploads abholen“" in page and "wird übernommen" in page
+        assert 'data-active="1"' in page and 'name="id"' not in page
+    assert portal.queue.join()
+    assert db.get("waha:Q9")["state"] == State.UPLOADED
 
 
 def test_overview_shows_counts_report_and_log(portal, make_pipeline, tmp_path):
@@ -171,3 +196,24 @@ def test_short_admin_password_is_rejected(monkeypatch, cfg):
     monkeypatch.setenv("ADMIN_PASSWORD", "short")
     with pytest.raises(ConfigError):
         Config.from_env()
+
+
+def test_release_into_chosen_event_or_yearly_collection(portal, db, make_pipeline, tmp_path, gallery):
+    pipe = make_pipeline(X)
+    pipe.ingest(_item("export", "chat/IMG-1.jpg", at(2026, 7, 11, 16), _photo(tmp_path, "c1.jpg", 12)))
+    pipe.pin("export:chat/IMG-1.jpg")                         # the event folder exists now
+    for n in range(3):
+        pipe.ingest(_item("waha", f"Q{n}", at(2026, 7, 20, 12, n), _photo(tmp_path, f"q{n}.jpg", 40 + n)))
+
+    page = portal.dispatch("GET", "/quarantine", AUTH).body.decode()
+    assert '<option value="event:x">11.07.2026 · Probe-Konzert</option>' in page and "„Allgemein“" in page
+
+    portal.dispatch("POST", "/quarantine", POST, _form(id="waha:Q0", target="event:x"))
+    portal.dispatch("POST", "/quarantine", POST, _form(id="waha:Q1", target="general"))
+    portal.dispatch("POST", "/quarantine", POST, _form(id="waha:Q2", target="event:forged"))
+    assert portal.queue.join()
+    assert db.get("waha:Q0")["remote_path"].startswith("Fotos/2026/2026-07-11 Probe-Konzert/")
+    assert db.get("waha:Q0")["event_key"] == "x"
+    assert db.get("waha:Q1")["remote_path"].startswith("Fotos/2026/2026 Allgemein/")
+    assert db.get("waha:Q2")["state"] == State.QUARANTINED   # unknown target: nothing done
+    assert "1 in den Jahres-Sammelordner übernommen" in portal.queue.status()["summary"]

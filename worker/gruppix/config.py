@@ -188,6 +188,7 @@ class Config:
     announce_text: str = DEFAULT_ANNOUNCE_TEXT
     # Admin portal (LAN only); off without a password
     admin_password: str | None = None
+    general_folder: str = "Allgemein"  # yearly collection folder for good photos without an event
 
     @property
     def db_path(self) -> Path:
@@ -287,4 +288,5 @@ class Config:
             announce_max_age_days=_int("ANNOUNCE_MAX_AGE_DAYS", 3),
             announce_text=(_str("ANNOUNCE_TEXT") or DEFAULT_ANNOUNCE_TEXT).replace("\\n", "\n"),
             admin_password=_admin_password(),
+            general_folder=_str("GENERAL_FOLDER", "Allgemein") or "Allgemein",
         )

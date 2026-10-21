@@ -322,10 +322,13 @@ ADMIN_PORT=8081
 ```
 Nach `sudo docker compose up -d` unter `http://<NAS-IP>:8081` aufrufen, Benutzer `admin`.
 - *Übersicht:* Zustand, Zahlen, Aufgaben mit letztem und nächstem Lauf, letzter Wochenbericht, die letzten Protokollzeilen.
-- *Quarantäne:* Vorschau nach Tagen, ankreuzen, „In die Galerie übernehmen“ (wie 📸).
-- *Duplikate:* „Prüfung starten“ – läuft im Hintergrund mit Fortschritt und Restzeit (Fingerabdrücke nachtragen, vergleichen, Vorschaubilder vorbereiten). Verglichen werden WhatsApp-Bilder untereinander (±15 min) und Fotografen-Uploads mit den WhatsApp-Bildern desselben Termins, egal wie viele Tage dazwischen liegen. Dann je Paar „Kopie löschen“, „beide behalten“ oder „später“ und „Auswahl ausführen“. Das Ergebnis bleibt bis zur nächsten Prüfung bzw. bis zum Neustart des Workers stehen.
+- *Quarantäne:* Vorschau nach Tagen, ankreuzen, unten das **Ziel** wählen, „In die Galerie übernehmen“.
+  - *Automatisch* (wie 📸): Bilder mit Termin in ihren Terminordner, Bilder ohne Termin nach `Fotos-Eingang/…/<Datum> Markiert` (dort von Hand einsortieren).
+  - *Terminordner:* Auswahl aus den vorhandenen Terminordnern, neueste zuerst.
+  - *Jahres-Sammelordner* für schöne Einzelbilder ohne Termin: `Fotos/<Jahr>/<Jahr> Allgemein` (Name über `GENERAL_FOLDER`).
+- *Duplikate:* „Prüfung starten“ – läuft im Hintergrund mit Fortschritt und Restzeit (Fingerabdrücke nachtragen, vergleichen, Vorschaubilder vorbereiten). Verglichen werden WhatsApp-Bilder untereinander (±15 min) und Fotografen-Uploads mit den WhatsApp-Bildern desselben Termins, egal wie viele Tage dazwischen liegen. Dann je Paar „Rechts (kleiner) löschen“ (Vorschlag), „Links (größer) löschen“ (wenn absichtlich die kleinere bleiben soll), „beide behalten“ oder „später“ und „Auswahl ausführen“. Gelöscht wird immer nur die Kopie in der Nextcloud, beide Originale bleiben im Archiv. Das Ergebnis bleibt bis zur nächsten Prüfung bzw. bis zum Neustart des Workers stehen.
 - Nur im eigenen Netz bzw. über VPN nutzen und den Port **nie** im Router freigeben: Das Portal zeigt Quarantäne-Bilder. Für HTTPS kann der Reverse-Proxy von DSM davorgeschaltet werden (*Systemsteuerung → Anmeldeportal → Erweitert → Reverse Proxy*).
-- Läuft gerade ein großer Auftrag (z. B. Fotografen-Upload), meldet das Portal „Gerade läuft …“ und ändert nichts; einfach später noch einmal.
+- Aktionen landen in einer Warteschlange: Die Seite kommt sofort zurück, oben steht „Aufträge werden ausgeführt: 3 von 12“, betroffene Bilder sind ausgegraut, ein zweiter Klick wird ignoriert. Seite wechseln oder schließen ist kein Problem. Läuft gerade ein großer Auftrag (z. B. Fotografen-Upload), wartet die Warteschlange darauf („wartet auf …“). Nach einem Neustart des Workers sind noch nicht erledigte Aufträge verworfen; die Bilder bleiben dann einfach, wo sie waren.
 - Jede Aktion steht mit IP-Adresse im Protokoll.
 
 **Übersichten als Datei:** Ohne Portal schreiben `gx quarantine` und `gx find-duplicates` je eine HTML-Seite nach `data/worker/` (`quarantine.html`, `duplicates.html`). Der Dienst erneuert beide vor dem Wochenbericht; der Bericht (Mail und Home-Assistant-Sensor „Zu prüfen“) nennt die Anzahl.
