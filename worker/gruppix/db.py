@@ -164,6 +164,16 @@ class Database:
             (msg_from, msg_to, *sources, *states),
         ).fetchall()
 
+    def fingerprinted_rows(self, sources: tuple[str, ...], states: tuple[str, ...]) -> list[sqlite3.Row]:
+        """Full rows of fingerprinted items, oldest message first (duplicate search)."""
+        src = ",".join("?" * len(sources))
+        st = ",".join("?" * len(states))
+        return self._conn.execute(
+            f"SELECT * FROM media WHERE phash IS NOT NULL AND source IN ({src}) AND state IN ({st}) "
+            f"ORDER BY msg_ts, id",
+            (*sources, *states),
+        ).fetchall()
+
     def missing_fingerprint(self) -> list[sqlite3.Row]:
         """Images stored before fingerprints existed (and whose file is still there)."""
         st = ",".join("?" * len(State.LIVE))

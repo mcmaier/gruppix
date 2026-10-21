@@ -25,7 +25,7 @@ Fotografen (Nextcloud-Upload-Ordner) ──────────────�
 | --- | --- | --- |
 | 1 | Export-Import, Kalenderzuordnung, Verarbeitung, Archiv, Upload, Fotografen-Upload, Dienst mit Zeitplan, Benachrichtigungen | fertig |
 | 2 | Live-Bot über WAHA: Empfang per Webhook, Reaktionen ❌/📸, Löschungen, Admin-Befehl „Ordner“, Opt-out „Stopp“, Bot-Nachricht pro Termin | fertig (`LIVE_INGEST=on`) |
-| – | Übersichtsseiten für Duplikate und Quarantäne, Wochenbericht | fertig |
+| – | Admin-Portal im LAN (Übersicht, Quarantäne, Duplikate), Wochenbericht | fertig |
 
 ## Regeln in Kürze
 
@@ -104,6 +104,10 @@ docker compose build worker
 docker compose up -d
 docker compose exec -T worker python -m gruppix notify-test
 ```
+
+## Admin-Portal
+
+Mit `ADMIN_PASSWORD` in der `.env` zeigt der Worker im lokalen Netz eine Admin-Oberfläche (Port 8081, Benutzer `admin`): Zustand und Protokoll, Quarantäne mit Vorschau zum Übernehmen in die Galerie, doppelte Bilder zum Löschen. Nur im LAN bzw. über VPN, nie über den Router freigeben. Details: [docs/setup.md](docs/setup.md), Abschnitt 8.
 
 ## Befehle
 

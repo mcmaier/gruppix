@@ -59,6 +59,10 @@ services:
       - ./data/worker:/data                    # state.sqlite, staging, outbox, calendar cache
       - ./import:/import:ro                    # WhatsApp exports (ZIP) for import-export
       - ${ARCHIVE_PATH:?set ARCHIVE_PATH in .env}:/archive   # originals as received
+    ports:
+      # Admin portal (only with ADMIN_PASSWORD): 0.0.0.0 = LAN (NAS), 127.0.0.1 = SSH tunnel
+      # (server). Never forward this port from the router: it shows quarantined photos.
+      - "${ADMIN_BIND:-127.0.0.1}:${ADMIN_PORT:-8081}:8081"
     depends_on:
       - waha
     healthcheck:

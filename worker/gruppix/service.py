@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from . import checks, jobs, review
+from . import admin, checks, jobs, review
 from .config import Config, ConfigError
 from .events import CalendarSourceError
 from .ingest_drop import UNDELETED
@@ -165,6 +165,18 @@ class Service:
                 )
             )
 
+    def _start_admin(self) -> ThreadingHTTPServer | None:
+        """Admin portal on its own port (published to the LAN only), if a password is set."""
+        if not self.cfg.admin_password:
+            return None
+        logs = admin.LogBuffer()
+        logging.getLogger().addHandler(logs)
+        portal = admin.AdminPortal(self.cfg, self, logs)
+        server = ThreadingHTTPServer(("0.0.0.0", admin.ADMIN_PORT), admin.handler(portal))
+        threading.Thread(target=server.serve_forever, name="admin", daemon=True).start()
+        log.info("Admin portal on :%d (user %s)", admin.ADMIN_PORT, admin.ADMIN_USER)
+        return server
+
     def _start_live(self) -> None:
         cfg = self.cfg
         if not cfg.live_ingest:
@@ -216,6 +228,10 @@ class Service:
             log.exception("review pages could not be renewed")
             counts = (0, 0)
         text, data = checks.weekly_report(self.cfg, list(self.notifier.active.values()), counts)
+        try:
+            (self.cfg.data_dir / "weekly-report.txt").write_text(text, encoding="utf-8")  # shown in the portal
+        except OSError as exc:
+            log.warning("weekly report not saved: %s", exc)
         self.notifier.publish_report(data)
         sent = self.notifier.mail("[Gruppix] Wochenbericht", text)
         return f"weekly report ({data['uploaded']} uploaded{', mailed' if sent else ''})"
@@ -238,6 +254,7 @@ class Service:
         self.notifier.announce()
         server = ThreadingHTTPServer(("0.0.0.0", self.cfg.http_port), _handler(self))
         threading.Thread(target=server.serve_forever, name="http", daemon=True).start()
+        portal_server = self._start_admin()
         log.info(
             "Service started: %s; notifications: %s; health on :%d/health",
             ", ".join(f"{j.name} ({_schedule(j)})" for j in self.jobs),
@@ -255,6 +272,8 @@ class Service:
                 self.stop.wait(_TICK_SECONDS)
         finally:
             server.shutdown()
+            if portal_server is not None:
+                portal_server.shutdown()
             log.info("Service stopped")
         return 0
 

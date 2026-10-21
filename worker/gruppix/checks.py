@@ -126,7 +126,9 @@ def weekly_report(cfg: Config, open_problems: list[str],
         lines.append(f"Verarbeitung fehlgeschlagen: {states[State.FAILED]} (Protokoll prüfen)")
     duplicates, quarantine = review
     if duplicates or quarantine:
-        lines += ["", "Zum Durchsehen (Seiten im Projektordner, über File Station öffnen):"]
+        where = ("im Admin-Portal oder als Seite im Projektordner" if cfg.admin_password
+                 else "Seiten im Projektordner, über File Station öffnen")
+        lines += ["", f"Zum Durchsehen ({where}):"]
         if duplicates:
             lines.append(f"  {duplicates:>4}  mögliche Duplikate      data/worker/duplicates.html")
         if quarantine:

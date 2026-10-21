@@ -26,6 +26,16 @@ def _required(name: str) -> str:
     return value
 
 
+ADMIN_PASSWORD_MIN = 12
+
+
+def _admin_password() -> str | None:
+    value = _str("ADMIN_PASSWORD")
+    if value is not None and len(value) < ADMIN_PASSWORD_MIN:
+        raise ConfigError(f"ADMIN_PASSWORD needs at least {ADMIN_PASSWORD_MIN} characters (or leave it empty)")
+    return value
+
+
 def _int(name: str, default: int) -> int:
     raw = _str(name)
     if raw is None:
@@ -176,6 +186,8 @@ class Config:
     announce_quiet: tuple[int, int] = (22, 9)  # no messages from 22:00 to 09:00, sent at 09:00
     announce_max_age_days: int = 3     # only for events that started within this many days
     announce_text: str = DEFAULT_ANNOUNCE_TEXT
+    # Admin portal (LAN only); off without a password
+    admin_password: str | None = None
 
     @property
     def db_path(self) -> Path:
@@ -274,4 +286,5 @@ class Config:
             announce_quiet=_hours("ANNOUNCE_QUIET_HOURS", (22, 9)),
             announce_max_age_days=_int("ANNOUNCE_MAX_AGE_DAYS", 3),
             announce_text=(_str("ANNOUNCE_TEXT") or DEFAULT_ANNOUNCE_TEXT).replace("\\n", "\n"),
+            admin_password=_admin_password(),
         )

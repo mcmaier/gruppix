@@ -314,7 +314,21 @@ Unterordner werden flach übernommen. Upload-Ordner ohne Datum landen in `Fotos-
 
 **Quarantäne:** Sie liegt nur auf dem Host unter `data/worker/staging/<Monat>/`, mit lesbaren Dateinamen, und wird nach `QUARANTINE_DAYS` gelöscht. Einzelne Bilder holt `gx release <Dateiname>` in die Galerie.
 
-**Übersichten zum Durchsehen:** `gx quarantine` und `gx find-duplicates` schreiben je eine HTML-Seite nach `data/worker/` (`quarantine.html`, `duplicates.html`). Der Dienst erneuert beide vor dem Wochenbericht; der Bericht (Mail und Home-Assistant-Sensor „Zu prüfen“) nennt die Anzahl.
+**Admin-Portal:** Quarantäne, Duplikate und Zustand im Browser, ohne SSH. Einschalten in der `.env`:
+```dotenv
+ADMIN_PASSWORD=<mindestens 12 Zeichen>
+ADMIN_BIND=0.0.0.0          # NAS im LAN; auf einem Server 127.0.0.1 und SSH-Tunnel
+ADMIN_PORT=8081
+```
+Nach `sudo docker compose up -d` unter `http://<NAS-IP>:8081` aufrufen, Benutzer `admin`.
+- *Übersicht:* Zustand, Zahlen, Aufgaben mit letztem und nächstem Lauf, letzter Wochenbericht, die letzten Protokollzeilen.
+- *Quarantäne:* Vorschau nach Tagen, ankreuzen, „In die Galerie übernehmen“ (wie 📸).
+- *Duplikate:* „Prüfung starten“ – läuft im Hintergrund mit Fortschritt und Restzeit (Fingerabdrücke nachtragen, vergleichen, Vorschaubilder vorbereiten). Verglichen werden WhatsApp-Bilder untereinander (±15 min) und Fotografen-Uploads mit den WhatsApp-Bildern desselben Termins, egal wie viele Tage dazwischen liegen. Dann je Paar „Kopie löschen“, „beide behalten“ oder „später“ und „Auswahl ausführen“. Das Ergebnis bleibt bis zur nächsten Prüfung bzw. bis zum Neustart des Workers stehen.
+- Nur im eigenen Netz bzw. über VPN nutzen und den Port **nie** im Router freigeben: Das Portal zeigt Quarantäne-Bilder. Für HTTPS kann der Reverse-Proxy von DSM davorgeschaltet werden (*Systemsteuerung → Anmeldeportal → Erweitert → Reverse Proxy*).
+- Läuft gerade ein großer Auftrag (z. B. Fotografen-Upload), meldet das Portal „Gerade läuft …“ und ändert nichts; einfach später noch einmal.
+- Jede Aktion steht mit IP-Adresse im Protokoll.
+
+**Übersichten als Datei:** Ohne Portal schreiben `gx quarantine` und `gx find-duplicates` je eine HTML-Seite nach `data/worker/` (`quarantine.html`, `duplicates.html`). Der Dienst erneuert beide vor dem Wochenbericht; der Bericht (Mail und Home-Assistant-Sensor „Zu prüfen“) nennt die Anzahl.
 - Seite in File Station herunterladen und im Browser öffnen. Die Vorschaubilder stecken in der Datei, sie verlässt den Host nur, wenn man sie selbst weitergibt.
 - Ankreuzen: in der Quarantäne „In die Galerie“, bei Duplikaten „Kein Duplikat – beide behalten“. Unten steht der fertige Befehl, z. B. `gx find-duplicates --delete 20261015-171111 --keep-both 3,17`.
 - Der Befehl gilt nur für genau diese Liste (Stand im Befehl). Wurde sie inzwischen erneuert, lehnt der Worker ab und man öffnet die neue Seite.

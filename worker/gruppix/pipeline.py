@@ -7,6 +7,7 @@ import hmac
 import logging
 import re
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -25,6 +26,7 @@ FAILED_STATES = frozenset({State.FAILED})
 
 # Same photo arriving as a different file (export vs. live, HD + standard size):
 CHAT_SOURCES = ("export", "waha")
+DROP_SOURCE = "drop"
 SIMILAR_WINDOW_SECONDS = 15 * 60  # export times have minute precision, phone clocks drift
 SIMILAR_MAX_BITS = 5              # dHash distance (of 64) still counted as the same photo
 
@@ -228,23 +230,33 @@ class Pipeline:
         return best
 
     def similar_pairs(self) -> list[tuple]:
-        """Already stored chat photos that look like the same picture.
+        """Stored photos that look like the same picture (report only, an admin decides).
 
-        Returns (keep, extra, distance) tuples: the larger copy is kept, the
-        other one is offered for removal. Pairs an admin marked as different
-        (``distinct_pairs``) are left out."""
-        rows = sorted(
-            (r for r in self._db.fingerprinted(0, 2**62, CHAT_SOURCES, State.PUBLISHED)),
-            key=lambda r: self._db.get(r["id"])["msg_ts"],
-        )
-        full = {r["id"]: self._db.get(r["id"]) for r in rows}
+        Returns (keep, extra, distance) tuples; the larger copy is kept, the
+        other one is offered for removal. Two kinds of pairs:
+
+        - chat ↔ chat (export, live) sent within SIMILAR_WINDOW_SECONDS;
+        - photographer upload ↔ chat photo of the same event, at any time apart
+          (camera originals uploaded days after a few were posted in the group).
+          On equal size the upload is kept.
+
+        Pairs an admin marked as different (``distinct_pairs``) are left out.
+        """
+        rows = self._db.fingerprinted_rows((*CHAT_SOURCES, DROP_SOURCE), State.PUBLISHED)
         distinct = self._db.distinct_pairs()
-        pairs, seen = [], set()
-        for i, a in enumerate(rows):
+        pairs: list[tuple] = []
+        seen: set[str] = set()  # extras already offered; each copy is offered once
+
+        def offer(keep, extra, distance: int) -> None:
+            pairs.append((keep, extra, distance))
+            seen.add(extra["id"])
+
+        chat = [r for r in rows if r["source"] in CHAT_SOURCES]
+        for i, a in enumerate(chat):
             if a["id"] in seen:
                 continue
-            for b in rows[i + 1:]:
-                if full[b["id"]]["msg_ts"] - full[a["id"]]["msg_ts"] > SIMILAR_WINDOW_SECONDS:
+            for b in chat[i + 1:]:
+                if b["msg_ts"] - a["msg_ts"] > SIMILAR_WINDOW_SECONDS:
                     break
                 if b["id"] in seen or (a["source"] == b["source"] and a["pixels"] == b["pixels"]):
                     continue
@@ -253,8 +265,25 @@ class Pipeline:
                 distance = media.hash_distance(a["phash"], b["phash"])
                 if distance <= SIMILAR_MAX_BITS:
                     keep, extra = (a, b) if (a["pixels"] or 0) >= (b["pixels"] or 0) else (b, a)
-                    pairs.append((full[keep["id"]], full[extra["id"]], distance))
-                    seen.add(extra["id"])
+                    offer(keep, extra, distance)
+
+        uploads: dict[str, list] = {}
+        for row in rows:
+            if row["source"] == DROP_SOURCE and row["event_key"]:
+                uploads.setdefault(row["event_key"], []).append(row)
+        for c in chat:
+            if c["id"] in seen or not c["event_key"] or c["event_key"] not in uploads:
+                continue
+            best, best_distance = None, SIMILAR_MAX_BITS + 1
+            for d in uploads[c["event_key"]]:
+                if d["id"] in seen or tuple(sorted((c["id"], d["id"]))) in distinct:
+                    continue
+                distance = media.hash_distance(c["phash"], d["phash"])
+                if distance < best_distance:
+                    best, best_distance = d, distance
+            if best is not None:
+                keep, extra = (best, c) if (best["pixels"] or 0) >= (c["pixels"] or 0) else (c, best)
+                offer(keep, extra, best_distance)
         return pairs
 
     def drop_duplicate(self, extra_id: str, keep_id: str) -> str:
@@ -273,15 +302,20 @@ class Pipeline:
         log.info("%s removed from the gallery as duplicate of %s", extra_id, keep_id)
         return State.DUPLICATE
 
-    def backfill_fingerprints(self) -> int:
-        """Fingerprint images stored before fingerprints existed. Returns the count."""
+    def backfill_fingerprints(self, progress: Callable[[int, int], None] | None = None) -> int:
+        """Fingerprint images stored before fingerprints existed. Returns the count.
+
+        ``progress(done, total)`` is called after each image (admin portal)."""
         done = 0
-        for row in self._db.missing_fingerprint():
+        rows = self._db.missing_fingerprint()
+        for n, row in enumerate(rows, start=1):
             path = next((Path(p) for p in (row["staged_path"], row["archive_path"]) if p and Path(p).exists()), None)
             print_ = media.fingerprint(path) if path else None
             if print_ is not None:
                 self._db.update(row["id"], phash=print_[0], pixels=print_[1])
                 done += 1
+            if progress is not None:
+                progress(n, len(rows))
         return done
 
     def _ingest_drop(self, base: dict, item: IncomingMedia, staged: Path, captured: datetime | None) -> str:

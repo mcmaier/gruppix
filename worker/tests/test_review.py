@@ -107,3 +107,37 @@ def test_weekly_report_names_review_pages(cfg):
     assert "50  mögliche Duplikate" in text and "data/worker/quarantine.html" in text
     assert data["review_duplicates"] == 50 and data["review_quarantine"] == 3
     assert "Zum Durchsehen" not in checks.weekly_report(cfg, [])[0]
+
+
+def _upload(pipe, tmp_path, seed, name, folder="2026-07-11 Probe-Konzert", when=at(2026, 7, 14, 9)):
+    from gruppix.pipeline import IncomingMedia
+
+    path = _photo(tmp_path, name, seed, size=(4000, 3000))
+    return pipe.ingest(IncomingMedia("drop", f"Fotos-Upload/{folder}/{name}@1", "drop", "drop", when, path,
+                                     seq=1, folder_hint=folder))
+
+
+def test_camera_upload_and_chat_copy_of_same_event_are_paired(cfg, db, make_pipeline, tmp_path):
+    pipe = make_pipeline(X)
+    pipe.ingest(_item("export", "chat/IMG-1.jpg", at(2026, 7, 11, 16), _photo(tmp_path, "c1.jpg", 9)))
+    pipe.pin("export:chat/IMG-1.jpg")
+    pipe.ingest(_item("export", "chat/IMG-2.jpg", at(2026, 7, 11, 17), _photo(tmp_path, "c2.jpg", 12)))
+    pipe.pin("export:chat/IMG-2.jpg")
+    # three days later the photographer uploads the originals (other bytes, other size)
+    assert _upload(pipe, tmp_path, 9, "DSC_0001.jpg") == State.UPLOADED
+    assert _upload(pipe, tmp_path, 31, "DSC_0002.jpg") == State.UPLOADED          # not in the chat
+
+    pairs = pipe.similar_pairs()
+    assert [(k["source"], e["id"]) for k, e, _ in pairs] == [("drop", "export:chat/IMG-1.jpg")]
+
+    db.add_distinct_pair(pairs[0][0]["id"], pairs[0][1]["id"])
+    assert pipe.similar_pairs() == []
+
+
+def test_upload_of_another_event_is_not_paired(cfg, db, make_pipeline, tmp_path):
+    other = event("y", "Grillfest", at(2026, 7, 25, 14), at(2026, 7, 25, 23))
+    pipe = make_pipeline(X, other)
+    pipe.ingest(_item("export", "chat/IMG-1.jpg", at(2026, 7, 11, 16), _photo(tmp_path, "c1.jpg", 9)))
+    pipe.pin("export:chat/IMG-1.jpg")
+    _upload(pipe, tmp_path, 9, "DSC_0001.jpg", folder="2026-07-25 Grillfest", when=at(2026, 7, 27, 9))
+    assert pipe.similar_pairs() == []

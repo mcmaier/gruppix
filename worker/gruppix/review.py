@@ -220,7 +220,7 @@ def _quarantine_page(cfg: Config, stamp: str, items) -> str:
             f'<span class="tick"><input type="checkbox" value="{n}"> In die Galerie</span></label>'
         )
     body = "\n".join(
-        f'<h2>{html.escape(_german_day(day))}</h2><div class="grid">{"".join(tiles)}</div>'
+        f'<h2>{html.escape(german_day(day))}</h2><div class="grid">{"".join(tiles)}</div>'
         for day, tiles in days.items()
     )
     lead = (
@@ -237,7 +237,7 @@ _DAYS = {"Monday": "Montag", "Tuesday": "Dienstag", "Wednesday": "Mittwoch", "Th
          "Friday": "Freitag", "Saturday": "Samstag", "Sunday": "Sonntag"}
 
 
-def _german_day(text: str) -> str:
+def german_day(text: str) -> str:
     name, rest = text.split(",", 1)
     return _DAYS.get(name, name) + "," + rest
 
@@ -245,8 +245,8 @@ def _german_day(text: str) -> str:
 # --- shared page parts ---------------------------------------------------------------
 
 
-def _thumbnail(path: str | None, kind: str, edge: int) -> tuple[str | None, str]:
-    """Data URI of a small JPEG and a size label."""
+def thumbnail_jpeg(path: str | None, kind: str, edge: int) -> tuple[bytes | None, str]:
+    """Small JPEG (bytes) and a size label; also used by the admin portal."""
     if not path or not Path(path).exists():
         return None, "Datei nicht gefunden"
     source = Path(path)
@@ -272,7 +272,15 @@ def _thumbnail(path: str | None, kind: str, edge: int) -> tuple[str | None, str]
     kib = Path(path).stat().st_size / 1024
     weight = f"{kib / 1024:.1f} MB" if kib >= 1024 else f"{kib:.0f} KB"
     label = ("Video · " if kind == "video" else "") + f"{width} × {height} px · {weight}"
-    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode(), label
+    return buf.getvalue(), label
+
+
+def _thumbnail(path: str | None, kind: str, edge: int) -> tuple[str | None, str]:
+    """Data URI of a small JPEG and a size label."""
+    data, label = thumbnail_jpeg(path, kind, edge)
+    if data is None:
+        return None, label
+    return "data:image/jpeg;base64," + base64.b64encode(data).decode(), label
 
 
 def _thumb_tag(path: str | None, kind: str, edge: int) -> str:
@@ -295,7 +303,8 @@ def _figure(cfg: Config, row, role: str, label: str, edge: int) -> str:
 def _page(cfg: Config, title: str, lead: str, body: str, command: dict[str, str], mode: str) -> str:
     created = datetime.now(cfg.tz).strftime("%d.%m.%Y %H:%M")
     return (
-        _PAGE.replace("{{title}}", html.escape(title))
+        _PAGE.replace("{{style}}", STYLE)
+        .replace("{{title}}", html.escape(title))
         .replace("{{lead}}", html.escape(lead))
         .replace("{{created}}", created)
         .replace("{{body}}", body)
@@ -304,12 +313,7 @@ def _page(cfg: Config, title: str, lead: str, body: str, command: dict[str, str]
     )
 
 
-_PAGE = """<!doctype html>
-<html lang="de"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{title}}</title>
-<style>
-:root { --bg:#f6f6f4; --card:#fff; --text:#1d1d1b; --muted:#6b6b66; --line:#e2e2dd;
+STYLE = """:root { --bg:#f6f6f4; --card:#fff; --text:#1d1d1b; --muted:#6b6b66; --line:#e2e2dd;
         --keep:#2f7d4f; --drop:#b4462f; --accent:#24527a; }
 @media (prefers-color-scheme: dark) {
   :root { --bg:#171716; --card:#222220; --text:#ececea; --muted:#a3a39e; --line:#363633;
@@ -353,7 +357,14 @@ section .tick { margin-top:12px; }
             border-radius:6px; background:var(--bg); }
 .bar button { font:inherit; padding:8px 14px; border:0; border-radius:6px; background:var(--accent); color:#fff; cursor:pointer; }
 .bar small { width:100%; color:var(--muted); }
-</style></head>
+"""
+
+_PAGE = """<!doctype html>
+<html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}}</title>
+<style>
+{{style}}</style></head>
 <body data-command="{{command}}" data-mode="{{mode}}"><main>
 <h1>{{title}}</h1>
 <p class="lead">{{lead}} <span class="muted">Stand {{created}}.</span></p>
