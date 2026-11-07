@@ -7,7 +7,9 @@
 
 services:
   waha:
-    image: devlikeapro/waha:latest
+    # Version from .env (WAHA_VERSION). Update only via compose, never in the
+    # Synology Container Manager: that recreates WAHA outside the gruppix network.
+    image: devlikeapro/waha:${WAHA_VERSION:-latest}
     container_name: gruppix-waha
     restart: unless-stopped
     ports:

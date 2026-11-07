@@ -15,8 +15,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+from urllib.parse import urlparse
 
-from . import admin, checks, jobs, review
+import requests
+
+from . import admin, checks, jobs, net, review
 from .config import Config, ConfigError
 from .events import CalendarSourceError
 from .ingest_drop import UNDELETED
@@ -32,6 +35,11 @@ _MAX_FAILURES = 3            # consecutive failures before a job raises an alert
 _STALL_AFTER = timedelta(minutes=5)   # loop idle this long without a running job = hung
 _JOB_MAX = timedelta(hours=3)        # a single job running longer = hung (large imports take minutes)
 _MAX_WEBHOOK_BYTES = 10 * 1024 * 1024  # payloads carry a media URL, never the file
+# After a (re)start Docker's DNS may need a moment (seen: both containers recreated at
+# once, first jobs failed with "Temporary failure in name resolution"): wait this long
+# for the configured hosts to resolve before the first job runs.
+_NETWORK_WAIT = timedelta(minutes=2)
+_NETWORK_POLL_SECONDS = 5
 
 _JOB_TITLES = {
     "import-drop": "Fotografen-Uploads",
@@ -39,6 +47,13 @@ _JOB_TITLES = {
     "promote-clusters": "Häufungen in den Eingang",
     "purge-quarantine": "Quarantäne löschen",
     "settle-held": "Zurückgehaltene Bilder auflösen",
+}
+
+
+_JOB_REMOTE = {  # what a job talks to, named in network error messages
+    "import-drop": "Nextcloud",
+    "retry-uploads": "Nextcloud",
+    "promote-clusters": "Nextcloud",
 }
 
 
@@ -88,6 +103,7 @@ class Service:
     inbox: WebhookInbox = None  # type: ignore[assignment]
     live: LiveIntake | None = None
     waha_misses: int = 0
+    waha_down_since: datetime | None = None  # first failed WAHA check of the current outage
     notifier: Notifier = None  # type: ignore[assignment]
     nextcloud: WebDavSink | None = None
 
@@ -198,22 +214,40 @@ class Service:
         self.notifier.ping(healthy=True)
         if self.live is not None:
             self._sync_alerts("live", "WhatsApp-Übernahme", self.live.problems())
+        self.notifier.remind()  # problems still open after a day are sent again
         self.notifier.publish_status()
 
     def _waha_check(self) -> str | None:
+        now = datetime.now(self.cfg.tz)
         try:
             problems = checks.waha_problems(self.cfg)
         except checks.WahaUnreachable as exc:
             # A busy NAS (e.g. during a long import) can delay WAHA for a while:
             # alert only after several consecutive misses.
             self.waha_misses += 1
+            if self.waha_down_since is None:
+                self.waha_down_since = now
             log.warning("waha-check: %s (%d in a row)", exc, self.waha_misses)
             if self.waha_misses >= _MAX_FAILURES:
                 self.notifier.alert("waha", "WhatsApp-Verbindung", f"{exc} (seit {self.waha_misses} Prüfungen)")
             return None
+        if self.waha_misses >= _MAX_FAILURES and self.waha_down_since is not None:
+            # The outage was alerted: say how long it lasted and what to catch up on.
+            self.notifier.resolve("waha", "WhatsApp-Verbindung", self._waha_outage_text(self.waha_down_since, now))
         self.waha_misses = 0
+        self.waha_down_since = None
         self._sync_alerts("waha", "WhatsApp-Verbindung", problems)
         return None
+
+    def _waha_outage_text(self, since: datetime, until: datetime) -> str:
+        text = (f"WAHA war von etwa {since:%d.%m. %H:%M} bis {until:%d.%m. %H:%M} Uhr nicht erreichbar "
+                "und ist jetzt wieder verbunden.")
+        if self.cfg.live_ingest:
+            # WAHA could not deliver webhooks either and keeps media only for an hour.
+            text += ("\n\nIn dieser Zeit wurden keine Bilder aus der Gruppe live übernommen. Zum Nachholen "
+                     "die Gruppe in WhatsApp mit Medien exportieren und die ZIP im Admin-Portal unter "
+                     "„Import“ hochladen; bereits vorhandene Bilder werden erkannt.")
+        return text
 
     def _daily_check(self) -> str | None:
         self._sync_alerts("calendar", "Kalender", checks.calendar_problems(self.cfg))
@@ -261,6 +295,7 @@ class Service:
             self.notifier.describe(),
             self.cfg.http_port,
         )
+        self.await_network()
         try:
             while not self.stop.is_set():
                 self.heartbeat = datetime.now(self.cfg.tz)
@@ -276,6 +311,30 @@ class Service:
                 portal_server.shutdown()
             log.info("Service stopped")
         return 0
+
+    def await_network(self, limit: timedelta = _NETWORK_WAIT, poll: float = _NETWORK_POLL_SECONDS) -> bool:
+        """Wait until WAHA and Nextcloud resolve (or `limit` passes); True when ready.
+
+        Jobs scheduled in the meantime simply run once the loop starts.
+        """
+        hosts = sorted({h for h in (urlparse(u).hostname for u in (self.cfg.waha_url, self.cfg.nc_webdav_url) if u)
+                        if h})
+        started = time.monotonic()
+        pending = [h for h in hosts if not net.resolves(h)]
+        if not pending:
+            return True
+        log.info("Waiting for the network: %s not resolvable yet", ", ".join(pending))
+        while pending and not self.stop.is_set():
+            self.heartbeat = datetime.now(self.cfg.tz)  # waiting is not a stalled loop
+            if time.monotonic() - started >= limit.total_seconds():
+                log.warning("Network: %s still not resolvable after %d s – starting anyway",
+                            ", ".join(pending), int(limit.total_seconds()))
+                return False
+            self.stop.wait(poll)
+            pending = [h for h in pending if not net.resolves(h)]
+        if not pending:
+            log.info("Network ready after %.0f s", time.monotonic() - started)
+        return not pending
 
     def _execute(self, job: Job) -> None:
         # Jobs run in the scheduler loop; long ones (a big photographer upload,
@@ -297,6 +356,9 @@ class Service:
             return
         except (CalendarSourceError, ConfigError) as exc:
             self._failed(job, str(exc))
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            # Expected outside condition (DNS, server down, timeout): one line, no traceback
+            self._failed(job, net.describe(exc, _JOB_REMOTE.get(job.name)), transient=True)
         except Exception as exc:  # noqa: BLE001 - one failing job must not stop the service
             log.exception("%s failed", job.name)
             self._failed(job, f"{type(exc).__name__}: {exc}"[:300])
@@ -310,10 +372,13 @@ class Service:
                 log.info("%s: %s (%.0f s)", job.name, summary, time.monotonic() - started)
         job.reschedule(datetime.now(self.cfg.tz))
 
-    def _failed(self, job: Job, message: str) -> None:
+    def _failed(self, job: Job, message: str, transient: bool = False) -> None:
         job.failures += 1
         job.last_error = message
-        log.error("%s failed (%d in a row): %s", job.name, job.failures, message)
+        if transient and job.failures < _MAX_FAILURES:
+            log.warning("%s failed (%d in a row, retried at the next run): %s", job.name, job.failures, message)
+        else:
+            log.error("%s failed (%d in a row): %s", job.name, job.failures, message)
         if job.failures >= _MAX_FAILURES:
             title = _JOB_TITLES.get(job.name, job.name)
             self.notifier.alert(f"job:{job.name}", title, f"{title} schlägt seit {job.failures} Versuchen fehl:\n{message}")

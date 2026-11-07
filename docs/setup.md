@@ -291,7 +291,7 @@ Der Worker sucht den Termin in dieser Reihenfolge:
 
 Unterordner werden flach übernommen. Upload-Ordner ohne Datum landen in `Fotos-Eingang/`.
 
-**Benachrichtigungen**, alle optional. Jedes Problem wird einmal beim Auftreten gemeldet und einmal, wenn es behoben ist.
+**Benachrichtigungen**, alle optional. Jedes Problem wird beim Auftreten gemeldet, solange es besteht einmal täglich als „Weiterhin offen“ wiederholt, und einmal, wenn es behoben ist. Nach einem WhatsApp-Ausfall nennt die Entwarnung den Zeitraum, für den Bilder per Export nachzuholen sind.
 
 - *E-Mail:* über einen SMTP-Zugang, am besten ein Vereinspostfach. In `SMTP_TO` einen zweiten Admin eintragen. Die eingebaute Mail-Funktion einer NAS lässt sich aus dem Container nicht nutzen.
 - *Home Assistant:* `MQTT_HOST` ist die LAN-Adresse des Brokers. Das Gerät „Gruppix“ erscheint automatisch. Push-Automation:
@@ -361,6 +361,8 @@ sudo docker compose pull waha
 sudo docker compose build --pull worker
 sudo docker compose up -d
 ```
+**WAHA und Worker nur so aktualisieren, nicht über den Container Manager.** Dessen Update erzeugt den Container außerhalb des gruppix-Netzes neu: WAHA läuft dann scheinbar normal, aber Worker und WAHA finden sich nicht mehr (`WAHA nicht erreichbar: Name 'waha' nicht auflösbar`), und Bilder aus der Gruppe kommen nicht mehr an. Mit `WAHA_VERSION` in der `.env` lässt sich WAHA auf eine feste Version setzen; dann ändert erst ein neuer Eintrag dort die Version.
+
 Neue Einstellungen stehen in `.env.example`. Schlüssel, die in der eigenen `.env` noch fehlen, zeigt:
 ```bash
 sudo diff <(sudo grep -o '^[A-Z0-9_]*=' .env | sort) <(grep -o '^[A-Z0-9_]*=' .env.example | sort)
@@ -385,7 +387,12 @@ sudo diff <(sudo grep -o '^[A-Z0-9_]*=' .env | sort) <(grep -o '^[A-Z0-9_]*=' .e
 | `MKCOL …: HTTP 404` | WebDAV-Adresse falsch | aus den *Dateien-Einstellungen* kopieren |
 | `PUT …: HTTP 507` | Kontingent voll | Kontingent erhöhen oder aufräumen |
 | `DELETE …: HTTP 423` (Warnung „Upload-Ordner“) | Nextcloud hält eine Dateisperre, meist nach abgebrochenem Upload | Bild ist schon in der Galerie; Sperre läuft nach etwa einer Stunde ab, der Worker löscht dann selbst. Hält sie an: Hoster bitten, hängende Sperren zu löschen |
-| `WAHA nicht erreichbar (ReadTimeout)` | Host ausgelastet | wird erst nach 3 Fehlversuchen gemeldet, meist harmlos |
+| `WAHA nicht erreichbar: Name 'waha' nicht auflösbar` | WAHA (oder der Worker) wurde außerhalb von Compose neu erstellt, z. B. per Update im Container Manager, und ist nicht mehr im gruppix-Netz | `sudo docker compose up -d --force-recreate`; meldet es einen Namenskonflikt, den genannten Container mit `sudo docker rm -f <name>` entfernen und wiederholen. Danach Bilder aus der Ausfallzeit per Export-Import nachholen (die Entwarnung nennt den Zeitraum) |
+| `… nicht erreichbar: Name '…' nicht auflösbar` direkt nach einem Neustart | Docker-DNS war noch nicht bereit | harmlos; der Worker wartet beim Start bis zu 2 min auf das Netz und wiederholt den Auftrag beim nächsten Lauf |
+| `… nicht erreichbar: Name 'daten.…' nicht auflösbar` dauerhaft | DNS oder Internet der NAS gestört | DSM → Netzwerk → DNS-Server prüfen |
+| `WAHA nicht erreichbar: Verbindung zu 'waha' abgelehnt` | WAHA-Container gestoppt oder startet gerade | `sudo docker compose ps`, ggf. `sudo docker compose up -d` |
+| `WAHA antwortet nicht (Zeitüberschreitung …)` | Host ausgelastet | wird erst nach 3 Fehlversuchen gemeldet, meist harmlos |
+| „Weiterhin offen: …“ | ein gemeldetes Problem besteht seit über 24 h | wird täglich wiederholt, bis es behoben ist |
 | `WAHA antwortet mit HTTP 401` | API-Schlüssel ungleich | `sudo docker compose up -d --force-recreate waha` |
 | `webhooks.signatures` zeigt `invalid` | `HOOK_HMAC_KEY` geändert, aber nur ein Container neu erstellt | beide neu erstellen: `up -d --force-recreate` |
 | `scheduler loop stalled` | Dienst hängt wirklich (seit dieser Version: kein Auftrag läuft, und die Schleife tickt seit 5 min nicht) | Log ansehen, `sudo docker compose restart worker` |

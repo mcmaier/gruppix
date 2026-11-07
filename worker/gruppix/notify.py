@@ -2,6 +2,8 @@
 
 Alerts are keyed and sent only on state changes (problem appears / is
 resolved), so a failing job does not produce a message every 15 minutes.
+A problem that stays open is repeated once a day (remind), so a single
+overlooked e-mail does not hide a days-long outage.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ import json
 import logging
 import smtplib
 import ssl
+from datetime import datetime, timedelta
 from email.message import EmailMessage
 from typing import Any
 
@@ -21,12 +24,15 @@ from .config import Config
 log = logging.getLogger(__name__)
 
 _EXPIRE_AFTER = 900  # s; HA marks the entities unavailable when the worker goes silent
+REMIND_AFTER = timedelta(hours=24)  # repeat an alert that is still open after this long
 
 
 class Notifier:
     def __init__(self, cfg: Config) -> None:
         self._cfg = cfg
         self._active: dict[str, str] = {}  # alert key -> message
+        self._titles: dict[str, str] = {}  # alert key -> title
+        self._last_sent: dict[str, datetime] = {}  # alert key -> last alert or reminder
 
     # --- configuration -----------------------------------------------------
 
@@ -62,14 +68,33 @@ class Notifier:
             self._active[key] = message
             return
         self._active[key] = message
+        self._titles[key] = title
+        self._last_sent[key] = self._now()
         log.warning("ALERT %s: %s", title, message)
         self._send_alert("problem", title, message)
 
-    def resolve(self, key: str, title: str) -> None:
+    def resolve(self, key: str, title: str, message: str | None = None) -> None:
+        """Clear a problem; message replaces the default text (e.g. what to catch up on)."""
         if self._active.pop(key, None) is None:
             return
+        self._titles.pop(key, None)
+        self._last_sent.pop(key, None)
         log.info("RESOLVED %s", title)
-        self._send_alert("resolved", f"Behoben: {title}", "Das Problem besteht nicht mehr.")
+        self._send_alert("resolved", f"Behoben: {title}", message or "Das Problem besteht nicht mehr.")
+
+    def remind(self, after: timedelta = REMIND_AFTER) -> list[str]:
+        """Repeat alerts still open after `after` (and since the last reminder); returns their keys."""
+        now = self._now()
+        due = [key for key, sent in self._last_sent.items() if key in self._active and now - sent >= after]
+        for key in due:
+            self._last_sent[key] = now
+            title = self._titles.get(key, key)
+            log.warning("REMINDER %s: %s", title, self._active[key])
+            self._send_alert("problem", f"Weiterhin offen: {title}", self._active[key])
+        return due
+
+    def _now(self) -> datetime:
+        return datetime.now(self._cfg.tz)
 
     def _send_alert(self, kind: str, title: str, message: str) -> None:
         self._mqtt([(f"{self._cfg.mqtt_prefix}/alert", {"kind": kind, "title": title, "message": message}, False)])

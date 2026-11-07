@@ -16,7 +16,7 @@ Kontext für Claude Code. gruppix übernimmt Fotos aus der WhatsApp-Gruppe eines
 | Modul | Aufgabe |
 | --- | --- |
 | `cli.py` | Einstieg `python -m gruppix <befehl>`; Befehle rufen `jobs.py` |
-| `service.py` | Dauerdienst `serve`: Zeitplan (Jobs, laufen nacheinander in der Hauptschleife), Prüfungen, Alarme, `/health` (laufender Auftrag ≤ 3 h gilt nicht als Hänger), `/webhook`, startet `LiveIntake` |
+| `service.py` | Dauerdienst `serve`: wartet beim Start bis 2 min, bis WAHA- und Nextcloud-Host auflösbar sind (`await_network`); Zeitplan (Jobs, laufen nacheinander in der Hauptschleife), Netzwerkfehler eines Jobs = eine Warnzeile ohne Traceback, Alarm erst nach 3 in Folge; Prüfungen, Alarme (WAHA-Ausfall: Entwarnung nennt Zeitraum + Export-Import zum Nachholen), `/health` (laufender Auftrag ≤ 3 h gilt nicht als Hänger), `/webhook`, startet `LiveIntake` (Downloads bei nicht erreichbarem WAHA bis 50 min ohne Versuchszählung) |
 | `jobs.py` | Arbeitseinheiten für CLI und Dienst; `pipeline_lock` (fcntl) serialisiert alles, was Zustände ändert |
 | `pipeline.py` | Kernlogik: ingest → Zuordnung → Zurückhalten/Quarantäne → Verarbeitung → Archiv → Upload |
 | `events.py` | iCal laden, Wiederholungen, Titelbereinigung, Ausschluss, De-Duplizierung, Zeitfenster |
@@ -25,7 +25,8 @@ Kontext für Claude Code. gruppix übernimmt Fotos aus der WhatsApp-Gruppe eines
 | `sinks.py` | Nextcloud-WebDAV (PUT/MKCOL/PROPFIND/DELETE, Quota) bzw. `LocalSink` für `--dry-run` |
 | `ingest_export.py` | WhatsApp-Export-ZIP (Android/iOS, DE/EN) |
 | `ingest_drop.py` | Fotografen-Upload-Ordner in Nextcloud |
-| `notify.py` | MQTT (HA-Discovery), SMTP, healthchecks.io; Alarme nur bei Zustandswechsel |
+| `notify.py` | MQTT (HA-Discovery), SMTP, healthchecks.io; Alarme bei Zustandswechsel, offene Alarme alle 24 h als „Weiterhin offen“ (`remind`, aus dem Heartbeat); `resolve` mit eigenem Text |
+| `net.py` | Netzwerkfehler einordnen (DNS / abgelehnt / Zeitüberschreitung / TLS) → eine deutsche Zeile mit Abhilfe; Docker-Dienstname nicht auflösbar → Hinweis „nicht im gruppix-Netz“ |
 | `webhook.py` | WAHA-Webhooks: HMAC-Prüfung (live: 401), Zähler je Ereignis/Gruppe, Mitschnitt (`WEBHOOK_CAPTURE`) |
 | `live.py` | Phase 2: Webhook → Aufgaben → Warteschlange → Thread (Download, ingest, 📸, ❌, Löschen, Befehle, Opt-out) |
 | `announce.py` | Bot-Nachricht pro Termin (abschaltbar, Ruhezeit) |
@@ -75,4 +76,4 @@ Offen:
 
 ## Betrieb
 
-`docker compose up -d` startet `gruppix-waha` und `gruppix-worker` (Befehl `serve`). Einzelbefehle im laufenden Dienst: `docker compose exec -T worker python -m gruppix <befehl>` (kein `run`: jeder kurzlebige Container löst auf Synology „unerwartet beendet“ aus). Dry-Run-Daten unter `/data/dryrun` mit eigener DB und eigener Sperre.
+`docker compose up -d` startet `gruppix-waha` und `gruppix-worker` (Befehl `serve`). Einzelbefehle im laufenden Dienst: `docker compose exec -T worker python -m gruppix <befehl>` (kein `run`: jeder kurzlebige Container löst auf Synology „unerwartet beendet“ aus). Dry-Run-Daten unter `/data/dryrun` mit eigener DB und eigener Sperre. Updates nur per `docker compose pull/up -d` (WAHA-Version über `WAHA_VERSION`); ein Update im Synology Container Manager erzeugt den Container außerhalb des Compose-Netzes neu → `waha` nicht auflösbar (Vorfall 11/2026, ~3 Tage ohne Live-Übernahme).

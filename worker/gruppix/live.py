@@ -34,7 +34,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from . import jobs
+from . import jobs, net
 from .announce import Announcer
 from .config import Config
 from .db import Database, State
@@ -51,6 +51,10 @@ BACKLOG_ALERT = timedelta(hours=2)
 _CALENDAR_TTL = timedelta(minutes=30)
 _ADMINS_TTL = timedelta(hours=1)
 _DOWNLOAD_TIMEOUT = 120
+# WAHA keeps media for WHATSAPP_FILES_LIFETIME (1 h). While WAHA is unreachable
+# (restart, update, Docker network) downloads keep being retried without using up
+# attempts, until shortly before the files expire.
+_NETWORK_GRACE = timedelta(minutes=50)
 _IDLE_SECONDS = 30
 COMMAND_WORD = "ordner"
 FOLDER_PAST_DAYS = 30      # "Ordner 2026-09-20 …" accepted back to this many days
@@ -249,6 +253,7 @@ class LiveIntake:
     _order_lock: threading.Lock = field(default_factory=threading.Lock)
     _last_stamp: int = 0
     announcer: Announcer | None = None
+    _waha_offline: bool = False  # logged once per outage, not once per queued photo
 
     def __post_init__(self) -> None:
         if self.announcer is None:
@@ -364,8 +369,17 @@ class LiveIntake:
                 return
             response.raise_for_status()
         except requests.RequestException as exc:
-            self._retry(path, task, f"download: {type(exc).__name__}")
+            if net.is_network_error(exc) and _age(path) < _NETWORK_GRACE:
+                if not self._waha_offline:
+                    self._waha_offline = True
+                    log.warning("live: %s – downloads are retried", net.describe(exc, "WAHA"))
+                return
+            reason = net.describe(exc, "WAHA") if net.is_network_error(exc) else type(exc).__name__
+            self._retry(path, task, f"download: {reason}")
             return
+        if self._waha_offline:
+            self._waha_offline = False
+            log.info("live: WAHA reachable again, downloads continue")
         tmp = target.with_suffix(target.suffix + ".part")
         tmp.write_bytes(response.content)
         os.replace(tmp, target)
@@ -541,6 +555,15 @@ def admin_ids(participants: Any) -> set[str]:
                 ids.add(value)
                 ids.add(value.replace("@s.whatsapp.net", "@c.us"))
     return ids
+
+
+def _age(path: Path) -> timedelta:
+    """Time since the task was queued (its file name starts with a µs stamp)."""
+    try:
+        stamp = int(path.name.split("_", 1)[0]) / 1_000_000
+    except ValueError:
+        return timedelta(0)
+    return timedelta(seconds=max(0.0, time.time() - stamp))
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:

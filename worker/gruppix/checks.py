@@ -10,6 +10,7 @@ from typing import Any
 
 import requests
 
+from . import net
 from .config import Config
 from .db import Database, State
 from .events import check_sources
@@ -50,6 +51,8 @@ def waha_problems(cfg: Config) -> list[str]:
         hint = " – API-Schlüssel prüfen" if status == 401 else ""
         raise WahaUnreachable(f"WAHA antwortet mit HTTP {status}{hint}") from exc
     except (requests.RequestException, ValueError) as exc:
+        if net.is_network_error(exc):
+            raise WahaUnreachable(net.describe(exc, "WAHA")) from exc
         raise WahaUnreachable(f"WAHA nicht erreichbar ({type(exc).__name__})") from exc
     problems = []
     for session in sessions:
@@ -84,7 +87,8 @@ def storage_problems(cfg: Config, nextcloud: WebDavSink | None) -> list[str]:
         try:
             free = nextcloud.quota_available()
         except requests.RequestException as exc:
-            problems.append(f"Nextcloud-Speicher nicht abfragbar ({exc})")
+            reason = net.describe(exc, "Nextcloud") if net.is_network_error(exc) else str(exc)
+            problems.append(f"Nextcloud-Speicher nicht abfragbar: {reason}")
         else:
             if free is not None and free < cfg.min_free_gb_nextcloud * _GB:
                 problems.append(f"Nextcloud: nur noch {free / _GB:.1f} GB frei")
